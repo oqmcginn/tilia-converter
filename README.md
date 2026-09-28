@@ -96,9 +96,7 @@ Then open http://localhost:8000. Unit tests are at http://localhost:8000/tests/.
 
 ## Deploy to GitHub Pages
 
-1. Push this folder to a GitHub repository (branch `main`).
-2. In **Settings → Pages**, set **Source** to **GitHub Actions**.
-3. The included workflow (`.github/workflows/pages.yml`) publishes the site on every push.
+Live at **https://oqmcginn.github.io/tilia-converter/**. Pages deploys straight from the `main` branch root (Settings → Pages → Deploy from a branch), so every push to `main` updates the site within a minute or two. There's no build step.
 
 ## Project layout
 
