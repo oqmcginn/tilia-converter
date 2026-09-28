@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tilia Converter</title>
+  <meta name="description" content="Turn spreadsheets and publications into Tilia (.tlx) files for the Neotoma Paleoecology Database.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 3c7 0 12 5 12 12 0 6-5 11-12 14C9 26 4 21 4 15 4 8 9 3 16 3z' fill='%232f6b4f'/%3E%3Cpath d='M16 8v19M16 14l-5-3M16 19l5-3' stroke='%23fff' stroke-width='2' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M16 3c7 0 12 5 12 12 0 6-5 11-12 14C9 26 4 21 4 15 4 8 9 3 16 3z"/><path class="vein" d="M16 8v19M16 14l-5-3M16 19l5-3"/></svg>
+      <div>
+        <h1>Tilia Converter</h1>
+        <p>Spreadsheets &amp; publications → Tilia <code>.tlx</code></p>
+      </div>
+    </div>
+    <nav class="top-actions">
+      <button class="ghost" id="btn-sample" type="button">Try sample data</button>
+      <button class="ghost" id="btn-load" type="button">Open project</button>
+      <button class="ghost" id="btn-save" type="button">Save project</button>
+      <button class="ghost danger" id="btn-reset" type="button">Start over</button>
+      <input type="file" id="project-input" accept=".json" hidden>
+    </nav>
+  </header>
+
+  <main class="layout">
+    <aside class="col-left">
+      <section class="panel" id="sources-panel">
+        <h2><span class="step">1</span> Add sources</h2>
+        <label class="drop" id="drop">
+          <input type="file" id="file-input" multiple accept=".xlsx,.xlsm,.xls,.ods,.csv,.tsv,.pdf,.txt,.ris,.bib,.html,.htm">
+          <strong>Drop files here</strong>
+          <span>or click to browse</span>
+          <small>Spreadsheets (xlsx, xls, csv, ods) · Publications (pdf, txt) · Citations (ris, bib)</small>
+        </label>
+        <form class="doi-row" id="doi-form">
+          <input id="doi-input" type="text" placeholder="…or paste a DOI, e.g. 10.1016/j.quascirev.2020.106512" aria-label="DOI">
+          <button type="submit">Add</button>
+        </form>
+        <label class="check"><input type="checkbox" id="opt-crossref" checked> Look up DOIs on CrossRef (sends only the DOI)</label>
+        <label class="check"><input type="checkbox" id="opt-geocode" checked> Fill country, state &amp; county from coordinates (sends coordinates to OpenStreetMap)</label>
+        <label class="check"><input type="checkbox" id="opt-orcid" checked> Look up authors’ ORCID iDs (sends author names and DOIs to orcid.org)</label>
+        <ul class="sources" id="sources"></ul>
+        <p class="privacy">Files are read in your browser and never uploaded. Only DOIs, titles, author names and coordinates go to CrossRef, ORCID and OpenStreetMap (if checked), and papers go to Claude only if you use it below.</p>
+      </section>
+
+      <section class="panel" id="ai-panel">
+        <details id="ai-details">
+          <summary><h2><span class="step alt">✦</span> Deeper extraction with Claude <em>optional</em></h2></summary>
+          <p class="muted">Pattern matching finds DOIs, coordinates, lab numbers and similar. Claude can read the paper’s full text and tables to fill in site descriptions, collection details and dates. The PDF is sent to the Anthropic API using your own key.</p>
+          <label class="field"><span>Anthropic API key</span><input type="password" id="ai-key" autocomplete="off" placeholder="sk-ant-…"></label>
+          <label class="check"><input type="checkbox" id="ai-remember"> Remember key on this device</label>
+          <label class="field"><span>Model</span><select id="ai-model"></select></label>
+          <button id="ai-run" type="button" class="primary wide">Read publications with Claude</button>
+          <p class="status" id="ai-status" role="status"></p>
+        </details>
+      </section>
+
+      <section class="panel" id="export-panel">
+        <h2><span class="step">3</span> Export</h2>
+        <ul class="issues" id="issues"></ul>
+        <label class="check"><input type="checkbox" id="opt-ages" checked> Include sample ages (#Chron1 row and age model)</label>
+        <div class="btn-col">
+          <button id="btn-tlx" type="button" class="primary wide">Download .tlx</button>
+          <div class="btn-row">
+            <button id="btn-copy" type="button">Copy XML</button>
+            <button id="btn-dates" type="button">Dates CSV</button>
+            <button id="btn-contacts" type="button">Contacts CSV</button>
+            <button id="btn-report" type="button">Report JSON</button>
+          </div>
+        </div>
+      </section>
+    </aside>
+
+    <section class="col-right">
+      <div class="panel review-head">
+        <h2><span class="step">2</span> Review what was found</h2>
+        <p class="muted">Each field shows where its value came from. Click a suggestion to use it, or type your own value.</p>
+        <div class="tabs" role="tablist" id="tabs"></div>
+      </div>
+      <div id="review"></div>
+      <details class="panel xml-preview">
+        <summary>Preview the Tilia XML</summary>
+        <pre id="xml"></pre>
+      </details>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <p>Output matches the structure of files saved by Tilia 3.0.3. Always open the output in <a href="https://www.neotomadb.org/apps/tilia" target="_blank" rel="noopener">Tilia</a> and check it before submitting to <a href="https://www.neotomadb.org/" target="_blank" rel="noopener">Neotoma</a>.</p>
+  </footer>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

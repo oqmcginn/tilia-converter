@@ -1,0 +1,29 @@
+FICTIONAL EXAMPLE PUBLICATION — for testing Tilia Converter only. The site, people and data below are invented.
+
+A 4,600-year pollen record of mixed-forest decline at Linden Pond, Minnesota, USA
+
+Jordan Q. Hartley (j.hartley@example.edu) and Ana Moreno
+
+Journal of Imaginary Paleoecology 12 (2021): 45-67
+
+Abstract
+We present a pollen record from Linden Pond, a small kettle lake in Hennepin County, Minnesota. The record documents the
+transition from pine–oak woodland to spruce-dominated forest with expanding prairie herbs.
+
+2. Study site
+Linden Pond (44°58'12"N, 93°15'36"W; 287 m a.s.l.) is a 4 ha kettle pond occupying a depression in glacial outwash.
+The pond has a maximum depth of 6.4 m. Surrounding vegetation is a mosaic of oak savanna and cultivated land.
+
+3. Methods
+Two overlapping cores were collected in February 2019 from the ice surface in 6.2 m water depth using a Livingstone corer.
+Samples of 1 cm3 were taken every 20 cm and processed with standard acetolysis; Lycopodium tablets were added as an exotic
+marker. A minimum of 300 terrestrial pollen grains was counted per level by A. Moreno.
+
+Table 1. Radiocarbon dates from Linden Pond.
+Lab number      Depth (cm)   Material              14C age (yr BP)
+Beta-512344     140-141      terrestrial plant macrofossils   1270 ± 30
+Beta-512345     260-261      wood                  2480 ± 30
+UCIAMS-20931    380-381      charcoal              3790 ± 25
+UCIAMS-20932    498-499      seeds                 4120 ± 35
+
+Ages were calibrated with IntCal20.

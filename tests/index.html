@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tilia Converter Tests</title>
+<style>
+  body { font: 14px/1.5 system-ui, sans-serif; margin: 24px; background: #fff; color: #1f2421; }
+  .pass { color: #2f6b4f; } .fail { color: #b3261e; font-weight: 600; }
+  pre { background: #f5f3ee; padding: 8px; white-space: pre-wrap; }
+  @media (prefers-color-scheme: dark) { body { background: #141715; color: #e6e9e6; } pre { background: #202521; } }
+</style>
+</head>
+<body>
+<h1>Tilia Converter — unit tests</h1>
+<p id="summary">Running…</p>
+<ol id="out"></ol>
+<script type="module">
+import { findCoordinates, findDates, findAltitude, findDOI, findGeography, findSiteNames, extractFromPublication, findCollectionDate } from '../js/extract/text.js';
+import { analyzeWorkbook, toNumber, splitLabel, normalizeUnit, parseCoordValue } from '../js/extract/spreadsheet.js';
+import { parseRIS, parseBibTeX, splitName, formatCitation } from '../js/extract/bib.js';
+import { buildTilia, validate, makeCodes, dateToSerial } from '../js/tilia.js';
+import { findTaxon } from '../js/record.js';
+import { guessPollenGroup } from '../js/lookups.js';
+import { orcidChecksumOK, normalizeOrcid, findOrcidsInText, nameAgreement, affiliationOverlap, scoreCandidate, decide, resolveOrcids, findAffiliations } from '../js/orcid.js';
+
+const results = [];
+const test = (name, fn) => { try { fn(); results.push([name, true]); } catch (e) { results.push([name, false, e.message]); } };
+const eq = (a, b, msg = '') => { if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error(`${msg} expected ${JSON.stringify(b)}, got ${JSON.stringify(a)}`); };
+const near = (a, b, tol = 1e-3) => { if (Math.abs(a - b) > tol) throw new Error(`expected ≈${b}, got ${a}`); };
+const ok = (c, msg) => { if (!c) throw new Error(msg || 'assertion failed'); };
+
+// ---------- text extraction ----------
+test('DMS coordinates with seconds', () => {
+  const c = findCoordinates(`Linden Pond (44°58'12"N, 93°15'36"W; 287 m a.s.l.)`)[0];
+  near(c.lat, 44.97); near(c.lon, -93.26);
+});
+test('Degree-decimal-minute coordinates', () => {
+  const c = findCoordinates(`located at 45° 12.5′ N, 121° 30.0′ W`)[0];
+  near(c.lat, 45.208333); near(c.lon, -121.5);
+});
+test('Decimal coordinates with hemispheres', () => {
+  const c = findCoordinates(`site (12.345°S, 45.678°E)`)[0];
+  near(c.lat, -12.345); near(c.lon, 45.678);
+});
+test('Labelled signed coordinates', () => {
+  const c = findCoordinates(`Latitude: 61.25, Longitude: -149.9`)[0];
+  near(c.lat, 61.25); near(c.lon, -149.9);
+});
+test('Altitude m a.s.l.', () => eq(findAltitude('at 1,234 m a.s.l. in the').value, 1234));
+test('Altitude "elevation of"', () => eq(findAltitude('at an elevation of 530 m on').value, 530));
+test('DOI', () => eq(findDOI('https://doi.org/10.1016/j.quascirev.2020.106512.'), '10.1016/j.quascirev.2020.106512'));
+test('US state implies country', () => {
+  const g = findGeography('The lake lies in Minnesota. Minnesota lakes are ...');
+  eq(g.country.value, 'United States'); eq(g.state.value, 'Minnesota');
+});
+test('Site name by frequency', () => eq(findSiteNames('Cores from Linden Pond. The Linden Pond record. Nearby Lake Itasca.')[0].value, 'Linden Pond'));
+test('Collection date', () => eq(findCollectionDate('Two cores were collected in February 2019 from').value, '2019-02'));
+test('Radiocarbon table rows', () => {
+  const d = findDates(`Beta-512344     140-141      wood    1270 ± 30\nUCIAMS-20931 380-381 charcoal 3790 ± 25`);
+  eq(d.length, 2); eq(d[0].labNumber, 'Beta-512344'); eq(d[0].age, 1270); eq(d[0].error, 30);
+  eq(d[0].depth, 140.5); eq(d[0].thickness, 1); eq(d[1].material, 'charcoal');
+});
+test('Full publication pass', () => {
+  const found = extractFromPublication([{ page: 2, text: `Linden Pond (44°58'12"N, 93°15'36"W; 287 m a.s.l.) is a kettle pond in Minnesota. Collected with a Livingstone corer. pollen pollen pollen` }], 'paper.pdf');
+  const get = (p) => found.find((f) => f.path === p)?.value;
+  eq(get('site.SiteName'), 'Linden Pond'); eq(get('site.Altitude'), 287);
+  eq(get('collectionUnit.CollectionDevice'), 'Livingstone corer'); eq(get('dataset.DatasetType'), 'pollen');
+  eq(get('collectionUnit.DepositionalEnvironment'), 'Glacial Origin Lake'); // lab convention for kettle lakes
+  ok(found.find((f) => f.path === 'site.LatNorth').source.includes('p.2'), 'page provenance');
+});
+
+// ---------- spreadsheet ----------
+test('toNumber variants', () => { eq(toNumber('1,234'), 1234); eq(toNumber('3,5'), 3.5); eq(toNumber(' 7 '), 7); eq(toNumber('abc'), null); });
+test('splitLabel', () => { eq(splitLabel('Pinus (%)'), { name: 'Pinus', unit: '%' }); eq(splitLabel('Quercus_count'), { name: 'Quercus count', unit: '' }); });
+test('normalizeUnit', () => { eq(normalizeUnit('%', []), 'percent'); eq(normalizeUnit('', [0, 1, 1]), 'present/absent'); eq(normalizeUnit('count', []), 'NISP'); });
+test('parseCoordValue DMS string', () => { near(parseCoordValue(`93°15'36" W`, true), -93.26); near(parseCoordValue('-45.5', false), -45.5); });
+
+test('Samples-as-rows with top/bottom depths', () => {
+  const rows = [
+    ['Sample ID', 'Top depth (cm)', 'Bottom depth (cm)', 'Age (ka)', 'Pinus', 'Quercus (%)', 'Notes', 'Total'],
+    ['A', 10, 12, 1.2, 5, 30, 'ok', 35],
+    ['B', 20, 22, 2.5, '', 'x', 'ok', 20],
+  ];
+  const r = analyzeWorkbook([{ name: 'S1', rows }], 'f.xlsx');
+  const ds = r.datasets[0];
+  eq(ds.layout, 'samples-as-rows');
+  eq(ds.samples.map((s) => s.depth), [11, 21]); eq(ds.samples[0].thickness, 2);
+  eq(ds.samples.map((s) => s.age), [1200, 2500]); eq(ds.samples[1].name, 'B');
+  eq(ds.variables.map((v) => v.name), ['Pinus', 'Quercus', 'Total']);
+  eq(ds.variables[2].include, false, 'Total excluded');
+  eq(ds.variables[1].values, [30, 1]); ok(ds.variables[1].presence);
+  eq(ds.variables[0].values, [5, null]);
+});
+test('Depth in metres converted', () => {
+  const r = analyzeWorkbook([{ name: 'S', rows: [['Depth (m)', 'Pinus', 'Picea'], [1.5, 1, 2], [2, 3, 4]] }], 'f');
+  eq(r.datasets[0].samples.map((s) => s.depth), [150, 200]);
+});
+test('Variables-as-rows (Tilia layout)', () => {
+  const rows = [
+    ['Taxon', 10, 20, 30],
+    ['Age', 100, 200, 300],
+    ['Pinus', 5, 6, 7],
+    ['Picea', 1, '', 3],
+  ];
+  const ds = analyzeWorkbook([{ name: 'T', rows }], 'f').datasets[0];
+  eq(ds.layout, 'variables-as-rows');
+  eq(ds.samples.map((s) => s.depth), [10, 20, 30]); eq(ds.samples.map((s) => s.age), [100, 200, 300]);
+  eq(ds.variables.map((v) => v.name), ['Pinus', 'Picea']); eq(ds.variables[1].values, [1, null, 3]);
+});
+test('Tilia-style descriptor columns', () => {
+  const rows = [
+    ['Code', 'Name', 'Element', 'Units', 'Group', 'L1', 'L2'],
+    ['#Depth', 'Depth', '', '', '', 5, 15],
+    ['Pin', 'Pinus', 'pollen', 'NISP', 'TRSH', 40, 50],
+  ];
+  const ds = analyzeWorkbook([{ name: 'T', rows }], 'f').datasets[0];
+  eq(ds.samples.map((s) => s.depth), [5, 15]);
+  const v = ds.variables[0];
+  eq([v.code, v.name, v.element, v.unitHint, v.group], ['Pin', 'Pinus', 'pollen', 'NISP', 'TRSH']);
+});
+test('Metadata sheet and date sheet', () => {
+  const r = analyzeWorkbook([
+    { name: 'Site', rows: [['Site name', 'Crystal Lake'], ['Latitude', 42.1], ['Longitude', -88.2], ['Country', 'USA']] },
+    { name: 'Dates', rows: [['Lab ID', 'Depth (cm)', '14C age', 'Error', 'Material'], ['Beta-1', '100-102', 1000, 30, 'wood']] },
+  ], 'f');
+  eq(r.metadata.find((m) => m.path === 'site.SiteName').value, 'Crystal Lake');
+  eq(r.metadata.find((m) => m.path === 'site.LongEast').value, -88.2);
+  eq(r.geochron[0], { labNumber: 'Beta-1', age: 1000, error: 30, depth: 101, thickness: 2, material: 'wood', method: 'Carbon-14', source: 'f › Dates (sheet)' });
+});
+
+// ---------- bibliography ----------
+test('splitName with particle', () => { const n = splitName('Willem van der Knaap'); eq([n.FamilyName, n.GivenNames, n.LeadingInitials], ['van der Knaap', 'Willem', 'W.']); });
+test('splitName comma form', () => eq(splitName('Moreno, Ana María').ShortContactName, 'Moreno, A.M.'));
+test('RIS', () => {
+  const r = parseRIS(`TY  - JOUR\nAU  - Smith, John\nAU  - Doe, Jane\nTI  - A title\nJO  - Quat Res\nPY  - 2019\nVL  - 5\nSP  - 10\nEP  - 20\nDO  - 10.1/abc\nER  - `)[0];
+  eq([r.authors.length, r.Year, r.Pages, r.DOI], [2, '2019', '10-20', '10.1/abc']);
+});
+test('BibTeX', () => {
+  const r = parseBibTeX(`@article{k,\n  author = {Smith, John and Jane Doe},\n  title = {{Pollen} at X},\n  journal = {Holocene},\n  year = 2020,\n  pages = {1--9}\n}`)[0];
+  eq([r.authors[1].FamilyName, r.ArticleTitle, r.Year, r.Pages], ['Doe', 'Pollen at X', '2020', '1-9']);
+});
+test('Citation format (Neotoma style)', () => eq(formatCitation({ authors: [splitName('Galka, Mariusz'), splitName('Knorr, Karl-Heinz'), splitName('Feurdean, Angelica')], Year: 2025, ArticleTitle: 'T', Journal: 'J', Volume: '3', Issue: '1', Pages: '1-2', DOI: '10.1/x' }), 'Galka, M., K.-H. Knorr, and A. Feurdean. 2025. T. J 3(1):1-2. [DOI: 10.1/x]'));
+test('Two-author citation keeps the comma', () => ok(formatCitation({ authors: [splitName('Rushton, Zoe A.'), splitName('Walsh, Megan K.')], Year: 2021 }).startsWith('Rushton, Z.A., and M.K. Walsh. 2021.')));
+
+// ---------- Tilia writer ----------
+const rec = {
+  site: { SiteName: 'Crystal & Co Lake', LatNorth: 42.1, LongEast: -88.2, Altitude: 250, Country: 'United States' },
+  collectionUnit: { Handle: 'CRYSTAL', CollectionType: 'Core', CollectionDate: '1999-06' },
+  dataset: { DatasetType: 'pollen', AgeModel: 'Bacon' },
+  contacts: [{ ...splitName('Smith, John'), roles: ['Investigator', 'Collector'] }],
+  publications: [{ PubType: 'journal article', Year: 2020, Citation: 'Smith, J. 2020. T.', ArticleTitle: 'T', authors: [splitName('Smith, John')] }],
+  geochron: [{ labNumber: 'Beta-1', age: 1000, error: 30, depth: 101, thickness: 2, material: 'wood', method: 'Carbon-14' }],
+  data: {
+    samples: [{ depth: 10, name: 'A', age: 100 }, { depth: 20, name: 'B', age: 200 }],
+    variables: [
+      { name: 'Pinus', code: 'Pin', element: 'pollen', units: 'NISP', group: 'TRSH', values: [5, 6], include: true },
+      { name: 'Picea', element: 'pollen', units: 'NISP', group: 'TRSH', values: [1, null], include: true },
+      { name: 'Total', values: [6, 6], include: false },
+    ],
+  },
+};
+const parse = (xml) => new DOMParser().parseFromString(xml, 'application/xml');
+test('XML matches Tilia 3.0.3 section order', () => {
+  const doc = parse(buildTilia(rec));
+  ok(!doc.querySelector('parsererror'), 'parse error');
+  eq([...doc.documentElement.children].map((c) => c.tagName), ['Version', 'Contacts', 'Publications', 'SpreadSheetBook', 'Site', 'CollectionUnit', 'Datasets', 'GeochronDataset', 'AgeModels']);
+  eq(doc.querySelector('Version > MajorVersion').textContent, '3');
+});
+test('Site, collection unit and dataset fields', () => {
+  const doc = parse(buildTilia(rec));
+  eq(doc.querySelector('Site > SiteName').textContent, 'Crystal & Co Lake');
+  eq(doc.querySelector('Site > LatSouth').textContent, '42.1');
+  eq(doc.querySelector('Site > Altitude').textContent, '250');
+  eq(doc.querySelector('CollectionUnit > CollectionDate').textContent, '36312', '1999-06-01 as a day serial');
+  eq(doc.querySelector('CollectionUnit > Collectors > Contact').getAttribute('ID'), '1');
+  eq(doc.querySelector('Dataset > DatasetType').textContent, 'Pollen');
+  eq(doc.querySelector('Dataset > Publications > Publication').getAttribute('ID'), '1');
+});
+test('Publication block uses Tilia 3 tags', () => {
+  const p = parse(buildTilia(rec)).querySelector('Publications > Publication');
+  eq([p.getAttribute('Primary'), p.querySelector('PublicationType').textContent, p.querySelector('PublicationYear').textContent, p.querySelector('Title').textContent], ['true', 'journal article', '2020', 'T']);
+  eq([p.querySelector('Authors > Author > Contact').getAttribute('ID'), p.querySelector('Author > LastName').textContent, p.querySelector('Author > Initials').textContent], ['1', 'Smith', 'J.']);
+});
+test('Geochronology and age model', () => {
+  const doc = parse(buildTilia(rec));
+  const g = doc.querySelector('GeochronDataset > Geochronology[AnalysisUnitID="Depth"] > GeochronSample');
+  eq(['Method', 'AgeUnits', 'Depth', 'Thickness', 'LabNumber', 'Age', 'ErrorOlder', 'StdDev', 'MaterialDated'].map((k) => g.querySelector(k).textContent), ['Carbon-14', 'Radiocarbon years BP', '101', '2', 'Beta-1', '1000', '30', '30', 'wood']);
+  const am = doc.querySelector('AgeModels > AgeModel');
+  eq([am.querySelector('ChronologyName').textContent, am.querySelector('Model').textContent, am.querySelector('AgeBoundOlder').textContent], ['Author generated', 'Bacon', '200']);
+  const cc = am.querySelector('ChronControls > ChronControl');
+  eq([cc.querySelector('AgeLimitOlder').textContent, cc.querySelector('AgeLimitYounger').textContent, cc.querySelector('GeochronLink').getAttribute('ID')], ['1030', '970', '1']);
+});
+test('Spreadsheet cells land in the right rows/cols', () => {
+  const doc = parse(buildTilia(rec));
+  const cols = [...doc.querySelectorAll('SpreadSheet > Col')];
+  eq(cols.length, 7 + 2);
+  const cell = (col, row) => cols[col - 1].querySelector(`cell[row="${row}"]`)?.textContent.trim();
+  // rows: 1 depth, 2 unit name, 3 #Chron1, 4 Pinus, 5 Picea
+  eq(cell(1, 3), '#Chron1'); eq(cell(2, 3), 'Author generated'); eq(cell(1, 4), 'Pin'); eq(cell(2, 4), 'Pinus'); eq(cell(7, 4), 'TRSH');
+  eq(cell(8, 1), '10'); eq(cell(8, 2), 'A'); eq(cell(9, 3), '200'); eq(cell(8, 4), '5'); eq(cell(9, 5), undefined);
+  ok(!buildTilia(rec).includes('>Total<'), 'excluded variable not written');
+});
+test('Ages option drops #Chron1 and the age model', () => {
+  const xml = buildTilia(rec, { includeAges: false });
+  ok(!xml.includes('#Chron1') && !xml.includes('<AgeModels'));
+  ok(xml.includes('<cell row="3">\n<text>Pin'), 'Pinus moves up to row 3');
+});
+test('dateToSerial', () => { eq(dateToSerial('2015-07'), 42186); eq(dateToSerial('1993'), 33970); eq(dateToSerial(''), null); });
+test('Taxon lookup gives real codes', () => { eq(findTaxon('Pinus')?.[1], 'Pin'); eq(findTaxon('poaceae')?.[4], 'UPHE'); eq(findTaxon('Not a taxon'), null); });
+test('makeCodes unique', () => eq(makeCodes([{ name: 'Pinus' }, { name: 'Pinus strobus' }, { name: 'Pinus' }, { name: 'X', code: 'Abc' }]), ['Pin', 'Pin.st', 'Pin2', 'Abc']));
+test('validate flags missing essentials', () => {
+  const v = validate({ site: {}, dataset: {}, contacts: [], data: null }).map((i) => i.msg).join(' ');
+  ok(/Site name/.test(v) && /coordinates/.test(v) && /Dataset type/.test(v));
+});
+test('Pollen groups', () => { eq(guessPollenGroup('Pinus strobus'), 'TRSH'); eq(guessPollenGroup('Lycopodium spike'), 'LABO'); eq(guessPollenGroup('Artemisia'), 'UPHE'); eq(guessPollenGroup('Typha latifolia'), 'AQVP'); });
+
+
+// ---------- ORCID ----------
+test('Hyphenated initials', () => eq(splitName('Knorr, Karl-Heinz').LeadingInitials, 'K.-H.'));
+test('ORCID checksum', () => {
+  ok(orcidChecksumOK('0000-0002-1825-0097'), 'ORCID docs example');
+  ok(orcidChecksumOK('0000-0002-1694-233X'), 'X check digit');
+  ok(!orcidChecksumOK('0000-0002-1825-0098'), 'bad digit rejected');
+  eq(normalizeOrcid('https://orcid.org/0000000218250097'), '0000-0002-1825-0097');
+});
+test('ORCIDs printed in text', () => {
+  const f = findOrcidsInText('J. Smith https://orcid.org/0000-0002-1825-0097 and 1234-5678-9012-3456 (invalid)');
+  eq(f.map((x) => x.id), ['0000-0002-1825-0097']);
+});
+test('Name agreement rules', () => {
+  const c = { FamilyName: 'Williams', GivenNames: 'John W.' };
+  eq(nameAgreement(c, { family: 'Williams', given: 'John' }), 'full');
+  eq(nameAgreement(c, { family: 'Williams', given: 'J.' }), 'initials');
+  eq(nameAgreement(c, { family: 'Williams', given: 'James' }), null);
+  eq(nameAgreement(c, { family: 'Wilson', given: 'John' }), null);
+  eq(nameAgreement({ FamilyName: 'Arroyo-Cabrales', GivenNames: 'Joaquín' }, { family: 'ARROYO-CABRALES', given: 'JOAQUIN' }), 'full');
+  eq(nameAgreement({ FamilyName: 'Moreno', LeadingInitials: 'A.' }, { family: 'Moreno', given: 'Ana' }), 'initials');
+});
+test('Affiliation overlap', () => {
+  ok(affiliationOverlap(['University of Wisconsin Madison'], ['University of Wisconsin-Madison']), 'hyphen variant');
+  ok(!affiliationOverlap(['University of Virginia'], ['University of Wisconsin-Madison']), 'different school');
+  ok(findAffiliations('Dept of Geography, University of Wisconsin-Madison, USA; Illinois State Museum').some((a) => /Wisconsin/.test(a)));
+});
+test('Scoring: DOI in works wins; name-only is capped', () => {
+  const c = { FamilyName: 'Smith', GivenNames: 'Jane' };
+  const works = { count: 10, dois: new Set(['10.1/abc']), journals: new Set(), topical: 8 };
+  eq(scoreCandidate(c, { id: 'a', given: 'Jane', family: 'Smith', works }, { dois: ['10.1/ABC'] }).score, 0.97);
+  const s = scoreCandidate(c, { id: 'b', given: 'Jane', family: 'Smith', institutions: ['Univ of X'], works: { ...works, dois: new Set() } }, { dois: ['10.1/abc'], affiliations: ['Univ of X'] });
+  ok(s.score <= 0.85 && s.score >= 0.7, `got ${s.score}`);
+  eq(scoreCandidate(c, { id: 'c', given: 'Joan', family: 'Smith' }, {}), null);
+});
+test('Decide: clear winner vs ambiguous', () => {
+  eq(decide([{ id: 'a', score: 0.8 }, { id: 'b', score: 0.5 }]).selected, 'a');
+  const amb = decide([{ id: 'a', score: 0.6 }, { id: 'b', score: 0.55 }, { id: 'c', score: 0.3 }]);
+  eq([amb.status, amb.selected, amb.candidates.length], ['ambiguous', null, 3]);
+  eq(decide([]).status, 'none');
+});
+
+// resolveOrcids against a stubbed API
+const fakeApi = {
+  'doi-self': { 'expanded-result': [{ 'orcid-id': '0000-0002-1825-0097', 'given-names': 'Jessica', 'family-names': 'Blois', 'institution-name': [] }] },
+  'Williams': { 'num-found': 3, 'expanded-result': [
+    { 'orcid-id': '0000-0001-0000-0001', 'given-names': 'John', 'family-names': 'Williams', 'institution-name': ['University of Wisconsin Madison'] },
+    { 'orcid-id': '0000-0001-0000-0002', 'given-names': 'John', 'family-names': 'Williams', 'institution-name': ['Hospital X'] },
+    { 'orcid-id': '0000-0001-0000-0003', 'given-names': 'Jack', 'family-names': 'Williams', 'institution-name': [] } ] },
+  'Moreno': { 'num-found': 2, 'expanded-result': [
+    { 'orcid-id': '0000-0001-0000-0004', 'given-names': 'Ana', 'family-names': 'Moreno', 'institution-name': [] },
+    { 'orcid-id': '0000-0001-0000-0005', 'given-names': 'Ana', 'family-names': 'Moreno', 'institution-name': [] } ] },
+  works: {
+    '0000-0001-0000-0001': [['Holocene pollen from lakes', 'Quaternary Research'], ['Paleoecology of X', 'Ecology']],
+    '0000-0001-0000-0002': [['Cardiac outcomes', 'NEJM']],
+    '0000-0001-0000-0004': [['Pollen', 'J']], '0000-0001-0000-0005': [['Pollen', 'J']],
+  },
+};
+const fakeFetch = async (url) => {
+  const u = decodeURIComponent(url);
+  let body;
+  if (u.includes('doi-self')) body = fakeApi['doi-self'];
+  else if (u.includes('expanded-search')) body = fakeApi[Object.keys(fakeApi).find((k) => u.includes(`"${k}"`))] || { 'num-found': 0, 'expanded-result': null };
+  else if (u.endsWith('/works')) {
+    const id = u.split('/').slice(-2)[0];
+    body = { group: (fakeApi.works[id] || []).map(([t, j]) => ({ 'work-summary': [{ title: { title: { value: t } }, 'journal-title': { value: j }, 'external-ids': { 'external-id': [] } }] })) };
+  } else body = {};
+  return { ok: true, json: async () => body };
+};
+const orcidDone = (async () => {
+  const contacts = [
+    { FamilyName: 'Blois', GivenNames: 'Jessica L.', FullContactName: 'Blois, Jessica L.' },
+    { FamilyName: 'Williams', GivenNames: 'John W.', FullContactName: 'Williams, John W.' },
+    { FamilyName: 'Moreno', GivenNames: 'Ana', FullContactName: 'Moreno, Ana' },
+    { FamilyName: 'Grimm', GivenNames: 'Eric', FullContactName: 'Grimm, Eric', crossrefOrcid: { id: '0000-0002-1694-233X', authenticated: true } },
+    { FamilyName: 'Nobody', GivenNames: 'Zed', FullContactName: 'Nobody, Zed' },
+  ];
+  await resolveOrcids(contacts, { dois: ['10.1/x'], journals: ['Quaternary Research'], affiliations: ['University of Wisconsin-Madison'] }, { fetchImpl: fakeFetch });
+  test('resolve: DOI-listed author confirmed', () => { eq(contacts[0].orcid.selected, '0000-0002-1825-0097'); eq(contacts[0].orcid.status, 'confirmed'); });
+  test('resolve: name search picks the paleo Williams, Jack excluded', () => {
+    const o = contacts[1].orcid;
+    eq(o.selected, '0000-0001-0000-0001'); eq(o.status, 'likely');
+    ok(!o.candidates.some((x) => x.id === '0000-0001-0000-0003'), 'Jack is a different given name');
+    ok(o.candidates[0].evidence.some((e) => /Affiliation/.test(e)) && o.candidates[0].evidence.some((e) => /Quaternary Research/.test(e)));
+  });
+  test('resolve: indistinguishable namesakes stay ambiguous', () => { eq(contacts[2].orcid.status, 'ambiguous'); eq(contacts[2].orcid.selected, null); eq(contacts[2].orcid.candidates.length, 2); });
+  test('resolve: authenticated CrossRef iD', () => { eq(contacts[3].orcid.selected, '0000-0002-1694-233X'); ok(contacts[3].orcid.candidates[0].score >= 0.99); });
+  test('resolve: no record', () => eq(contacts[4].orcid.status, 'none'));
+  test('XML writes ORCID into contact URL', () => {
+    const xml = buildTilia({ ...rec, contacts: [{ ...splitName('Blois, Jessica'), roles: [], orcid: contacts[0].orcid }] });
+    ok(xml.includes('<URL>https://orcid.org/0000-0002-1825-0097</URL>'));
+  });
+})();
+
+await orcidDone;
+// ---------- report ----------
+const out = document.getElementById('out');
+for (const [name, pass, msg] of results) {
+  const li = document.createElement('li');
+  li.className = pass ? 'pass' : 'fail';
+  li.textContent = `${pass ? '✓' : '✗'} ${name}${msg ? ' — ' + msg : ''}`;
+  out.append(li);
+}
+const failed = results.filter((r) => !r[1]).length;
+document.getElementById('summary').textContent = `${results.length - failed}/${results.length} passed`;
+document.getElementById('summary').className = failed ? 'fail' : 'pass';
+window.__testResults = { total: results.length, failed, failures: results.filter((r) => !r[1]) };
+</script>
+</body>
+</html>

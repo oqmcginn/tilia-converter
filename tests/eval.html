@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Extraction Evaluation</title>
+<style>
+  :root { --bg: #fff; --text: #1f2421; --muted: #6b716b; --ok: #2f6b4f; --okbg: #e5efe8; --bad: #b3261e; --badbg: #fbe5e3; --na: #f3f1ec; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #141715; --text: #e6e9e6; --muted: #9aa29b; --ok: #6fbf95; --okbg: #1f3329; --bad: #f08b82; --badbg: #3a1f1d; --na: #202521; } }
+  body { font: 13px/1.45 system-ui, sans-serif; margin: 20px; background: var(--bg); color: var(--text); }
+  table { border-collapse: collapse; font-size: 12px; }
+  th, td { border: 1px solid color-mix(in srgb, var(--muted) 30%, transparent); padding: 3px 6px; vertical-align: top; max-width: 220px; }
+  td.ok { background: var(--okbg); } td.bad { background: var(--badbg); } td.na { background: var(--na); color: var(--muted); }
+  small { color: var(--muted); display: block; }
+  .wrap { overflow-x: auto; }
+</style>
+</head>
+<body>
+<h1>Extraction vs. hand-made Tilia files</h1>
+<p>Runs the publication pipeline on each example PDF and compares with the manually converted .tlx. Needs <code>tests/_eval/manifest.json</code> (local only, git-ignored).</p>
+<p id="status">Loading…</p>
+<div class="wrap"><table id="summary"></table></div>
+<h2>Per study</h2>
+<div class="wrap"><table id="detail"></table></div>
+<script type="module">
+import { readPdf } from '../js/io.js';
+import { ingestPublication, geocodeSite } from '../js/pipeline.js';
+import { emptyState, toRecord } from '../js/record.js';
+
+const params = new URLSearchParams(location.search);
+const useCrossref = params.get('crossref') !== '0';
+// ?site=1 simulates the user choosing the site they are converting (the folder's site name)
+const pinSite = params.get('site') === '1';
+
+// ---------- ground truth from a hand-made .tlx ----------
+function truthFrom(xmlText) {
+  const d = new DOMParser().parseFromString(xmlText.replace(/^﻿/, ''), 'application/xml');
+  const t = (sel) => d.querySelector(sel)?.textContent.trim() || '';
+  const pub = d.querySelector('Publications > Publication[Primary="true"]') || d.querySelector('Publications > Publication');
+  const pt = (sel) => pub?.querySelector(sel)?.textContent.trim() || '';
+  const serial = t('CollectionUnit > CollectionDate');
+  let date = '';
+  if (/^\d+$/.test(serial)) date = new Date(Date.UTC(1899, 11, 30) + Number(serial) * 864e5).toISOString().slice(0, 10);
+  return {
+    'site.SiteName': t('Site > SiteName'),
+    'site.LatNorth': t('Site > LatNorth'),
+    'site.LongEast': t('Site > LongEast'),
+    'site.Altitude': t('Site > Altitude'),
+    'site.Country': t('Site > Country'),
+    'site.State': t('Site > State'),
+    'site.County': t('Site > County'),
+    'collectionUnit.CollectionType': t('CollectionUnit > CollectionType'),
+    'collectionUnit.CollectionDevice': t('CollectionUnit > CollectionDevice'),
+    'collectionUnit.CollectionDate': date,
+    'collectionUnit.DepositionalEnvironment': t('CollectionUnit > DepositionalEnvironment'),
+    'collectionUnit.WaterDepth': t('CollectionUnit > WaterDepth'),
+    'dataset.DatasetType': t('Datasets > Dataset > DatasetType'),
+    'pub.Title': pt('Title'),
+    'pub.Year': pt('PublicationYear'),
+    'pub.DOI': pt('DOI'),
+    'pub.Journal': pt('Journal'),
+    'pub.Authors': [...(pub?.querySelectorAll('Authors > Author > LastName') || [])].map((e) => e.textContent.trim()),
+    geochron: [...d.querySelectorAll('GeochronSample')].map((g) => ({
+      lab: g.querySelector('LabNumber')?.textContent.trim() || '',
+      age: parseFloat(g.querySelector('Age')?.textContent), error: parseFloat(g.querySelector('ErrorOlder')?.textContent),
+      depth: parseFloat(g.querySelector('Depth')?.textContent), method: g.querySelector('Method')?.textContent.trim(),
+    })),
+  };
+}
+
+// ---------- comparison rules ----------
+const norm = (s) => String(s ?? '').replace(/[łŁ]/g, 'l').replace(/[øØ]/g, 'o').replace(/ß/g, 'ss').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+const num = (s) => parseFloat(String(s).replace(/,/g, ''));
+const RULES = {
+  'site.SiteName': (a, b) => norm(a) && (norm(a) === norm(b) || norm(b).includes(norm(a)) || norm(a).includes(norm(b))),
+  'site.LatNorth': (a, b) => Math.abs(num(a) - num(b)) <= 0.02,
+  'site.LongEast': (a, b) => Math.abs(num(a) - num(b)) <= 0.02,
+  'site.Altitude': (a, b) => Math.abs(num(a) - num(b)) <= Math.max(10, 0.05 * Math.abs(num(b))),
+  'collectionUnit.WaterDepth': (a, b) => Math.abs(num(a) - num(b)) <= 0.25,
+  'collectionUnit.CollectionDevice': (a, b) => { const k = norm(a).split(' ').filter((w) => w.length > 3 && !/corer|sampler|piston|modified/.test(w)); return k.length > 0 && k.some((w) => norm(b).includes(w)); },
+  'collectionUnit.CollectionDate': (a, b) => String(a).slice(0, 4) === String(b).slice(0, 4),
+  'pub.Title': (a, b) => { const x = norm(a), y = norm(b); return x.length > 10 && (x === y || y.startsWith(x.slice(0, 40)) || x.startsWith(y.slice(0, 40))); },
+  'pub.DOI': (a, b) => norm(a) === norm(b),
+  'pub.Year': (a, b) => String(a) === String(b),
+};
+const same = (k, a, b) => (RULES[k] || ((x, y) => norm(x) === norm(y)))(a, b);
+
+async function evaluate(pair) {
+  const [pdfBlob, tlx] = await Promise.all([fetch(pair.pdf).then((r) => r.blob()), fetch(pair.tlx).then((r) => r.text())]);
+  const truth = truthFrom(tlx);
+  const pdf = await readPdf(new File([pdfBlob], pair.pdf.split('/').pop()));
+  const state = emptyState();
+  await ingestPublication(state, pdf.pages, 'pdf', { title: pdf.title, crossref: useCrossref, site: pinSite ? (pair.site || '').trim() : '' });
+  if (params.get('geocode') !== '0') { try { await geocodeSite(state); } catch { /* offline */ } }
+  const rec = toRecord(state);
+  const p = state.publications[0] || {};
+  const got = {
+    ...Object.fromEntries(Object.keys(truth).filter((k) => /^(site|collectionUnit|dataset)\./.test(k)).map((k) => [k, state.values[k] ?? ''])),
+    'pub.Title': p.ArticleTitle || '', 'pub.Year': p.Year || '', 'pub.DOI': p.DOI || '', 'pub.Journal': p.Journal || '',
+    'pub.Authors': (p.authors || []).map((a) => a.FamilyName),
+  };
+  const row = { name: pair.name, fields: {}, geo: null };
+  for (const k of Object.keys(truth)) {
+    if (k === 'geochron') continue;
+    const tv = truth[k], gv = got[k];
+    if (k === 'pub.Authors') {
+      if (!tv.length) { row.fields[k] = { status: 'na' }; continue; }
+      const hit = tv.filter((ln) => gv.some((g) => norm(g) === norm(ln))).length;
+      row.fields[k] = { status: hit === tv.length ? 'ok' : 'bad', truth: `${tv.length} authors`, got: `${hit}/${tv.length} found`, frac: hit / tv.length };
+      continue;
+    }
+    if (tv === '' || tv == null || /^in (review|press|prep)/i.test(tv)) { row.fields[k] = { status: 'na', got: gv }; continue; }
+    row.fields[k] = { status: gv !== '' && gv != null && same(k, gv, tv) ? 'ok' : 'bad', truth: tv, got: gv };
+  }
+  // geochronology: recall of hand-entered radiocarbon/other dates by lab number, and value accuracy for matches
+  const tg = truth.geochron.filter((g) => g.lab);
+  const labKey = (s) => norm(s).replace(/\s+/g, '');
+  const matched = tg.filter((g) => state.geochron.some((x) => labKey(x.labNumber) === labKey(g.lab)));
+  const exact = matched.filter((g) => { const x = state.geochron.find((y) => labKey(y.labNumber) === labKey(g.lab)); return x.age === g.age && (x.error == null || x.error === g.error); });
+  row.geo = { truth: tg.length, found: matched.length, exact: exact.length, extracted: state.geochron.length };
+  return row;
+}
+
+const status = document.getElementById('status');
+let manifest;
+try { manifest = await (await fetch('_eval/manifest.json')).json(); } catch { status.textContent = 'No manifest found.'; throw new Error('no manifest'); }
+const rows = [];
+for (const [i, pair] of manifest.entries()) {
+  status.textContent = `Evaluating ${i + 1}/${manifest.length}: ${pair.name}…`;
+  try { rows.push(await evaluate(pair)); } catch (e) { rows.push({ name: pair.name, error: e.message, fields: {}, geo: null }); }
+}
+status.textContent = `Done: ${rows.length} studies${useCrossref ? '' : ' (CrossRef off)'}${pinSite ? ' (site pinned)' : ''}.`;
+
+// ---------- render ----------
+const keys = [...new Set(rows.flatMap((r) => Object.keys(r.fields)))];
+const summary = {};
+for (const k of keys) {
+  const vals = rows.map((r) => r.fields[k]).filter((f) => f && f.status !== 'na');
+  summary[k] = { ok: vals.filter((f) => f.status === 'ok').length, n: vals.length };
+}
+const g = rows.filter((r) => r.geo).reduce((a, r) => ({ truth: a.truth + r.geo.truth, found: a.found + r.geo.found, exact: a.exact + r.geo.exact, extracted: a.extracted + r.geo.extracted }), { truth: 0, found: 0, exact: 0, extracted: 0 });
+const au = rows.map((r) => r.fields['pub.Authors']).filter((f) => f && f.frac != null);
+summary['pub.Authors (share of names found)'] = { ok: Math.round(au.reduce((a, f) => a + f.frac, 0) * 10) / 10, n: au.length };
+summary['geochron (lab numbers found)'] = { ok: g.found, n: g.truth };
+summary['geochron (age & error exact | found)'] = { ok: g.exact, n: g.found };
+document.getElementById('summary').innerHTML = '<tr><th>Field</th><th>Correct</th><th>Of</th><th>%</th></tr>' +
+  Object.entries(summary).map(([k, v]) => `<tr><td>${k}</td><td>${v.ok}</td><td>${v.n}</td><td>${v.n ? Math.round(100 * v.ok / v.n) : '–'}%</td></tr>`).join('');
+const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;');
+document.getElementById('detail').innerHTML = `<tr><th>Study</th>${keys.map((k) => `<th>${k.split('.').pop()}</th>`).join('')}<th>dates</th></tr>` +
+  rows.map((r) => `<tr><td>${esc(r.name)}${r.error ? `<small>${esc(r.error)}</small>` : ''}</td>${keys.map((k) => {
+    const f = r.fields[k];
+    if (!f) return '<td></td>';
+    return `<td class="${f.status}">${esc(f.got)}${f.status === 'bad' ? `<small>truth: ${esc(f.truth)}</small>` : ''}</td>`;
+  }).join('')}<td>${r.geo ? `${r.geo.found}/${r.geo.truth} found, ${r.geo.exact} exact, ${r.geo.extracted} extracted` : ''}</td></tr>`).join('');
+window.__eval = { summary, rows };
+</script>
+</body>
+</html>
