@@ -68,19 +68,23 @@ Always review the file in Tilia (lookups, taxon names, chronology) before you su
 
 ## Accuracy on real papers
 
-`tests/eval.html` runs the publication pipeline on example PDFs and scores each field against hand-made Tilia files. Put study folders (a PDF plus a `.tlx`) next to the app and generate `tests/_eval/manifest.json`, which is git-ignored and stays on your machine. Results on 20 lab examples, three of which are scanned PDFs with no text layer:
+`tests/eval.html` runs the publication pipeline on example PDFs and scores each field against hand-made Tilia files. Put study folders (a PDF plus a `.tlx`) next to the app and generate `tests/_eval/manifest.json`, which is git-ignored and stays on your machine. Results on 21 lab examples (three are scanned PDFs with no text layer), with the site chosen by the user:
 
-| Field | Automatic | Site chosen by user |
-|---|---|---|
-| Radiocarbon dates found (by lab number) | 134 / 149 | same |
-| …with exactly the right age and error | 119 / 134 | same |
-| Latitude / longitude | 9 / 20, 7 / 20 | 12 / 20, 11 / 20 |
-| Country / state / county | 16 / 20, 14 / 19, 6 / 9 | 16, 14, 7 / 9 |
-| Dataset type | 18 / 20 | same |
-| Title / year | 15 / 20, 12 / 16 | same |
-| Collection device / depositional environment | 11 / 19, 9 / 20 | 11, 11 / 20 |
-| Collection date (year) | 8 / 18 | same |
-| Altitude / water depth | 9 / 20, 2 / 9 | 10 / 20, 2 / 9 |
+| Field | Correct |
+|---|---|
+| Radiocarbon dates found (by lab number) | 134 / 152, of which 119 have exactly the right age and error |
+| Latitude / longitude | 12 / 21, 11 / 21 |
+| Altitude | 11 / 21 |
+| Country / state / county | 17 / 21, 15 / 20, 7 / 10 |
+| Dataset type | 19 / 21 |
+| Title / year / journal | 16 / 21, 13 / 17, 10 / 15 |
+| Collection device | 15 / 20 |
+| Depositional environment | 12 / 21 |
+| Collection date (year) | 9 / 19 |
+
+With the paper *and* its data workbook (Billy Slope Meadow), every metadata field, all dates, the age model and all 1,240 spreadsheet cells match the expert's file.
+
+**Multi-proxy workbooks.** Sheets are recognised as data, dates (including "2780 ± 35" cells), or age-model output (depth + best + min/max, e.g. clam or Bacon). The sheet matching the dataset type is converted. Sample ages and their modelled ranges come from the age-model sheet. Spreadsheet taxon labels are mapped to Neotoma names ("Salicaceae populus type" → Populus-type, "Cheno.Am" → Amaranthaceae).
 
 Scanned PDFs, per-site values in complex tables, and anything not stated in the paper need Claude extraction or manual entry.
 

@@ -8,7 +8,7 @@ import { findCoordinates } from './text.js';
 
 const RE = {
   depth: /^(mid(dle|point)?[\s_-]*)?depth\b|depth[\s_]*\(?(cm|m|mm)\)?$|^depth[\s_]*(cm|m|mm)$|^cm$|composite depth|^mcd\b|^depth/i,
-  top: /\b(top|upper|from|start)\b.*depth|depth.*\b(top|upper|from|start)\b|^top\b/i,
+  top: /\b(top|upper|from|start)\b.*depth|depth.*\b(top|upper|from|start)\b|^top\b|^cm[\s_]*top\b/i,
   bottom: /\b(bottom|base|lower|to|end)\b.*depth|depth.*\b(bottom|base|lower|end)\b|^(bottom|base)\b/i,
   thick: /thick/i,
   age: /\bage\b|cal\.?\s*(yr|a|ka|bp)|yr\.?\s*b\.?p|\bb\.?p\.?\b|years? before|\bkyr\b|\bka\b|\bchron/i,
@@ -185,7 +185,9 @@ function parseDateSheet(rows, sheetName) {
   }
   const out = [];
   for (const row of rows.slice(h + 1)) {
-    const age = col.age != null ? toNumber(row[col.age]) : null;
+    // ages are often written "2780 ± 35" in one cell
+    const pm = col.age != null && typeof row[col.age] === 'string' ? row[col.age].match(/^\s*([\d,. ]+?)\s*(?:±|\+\/-|\+-)\s*([\d.]+)/) : null;
+    const age = pm ? toNumber(pm[1].replace(/[ ,]/g, '')) : (col.age != null ? toNumber(row[col.age]) : null);
     if (age == null) continue;
     let depth = col.depth != null ? row[col.depth] : null;
     let thickness = col.thickness != null ? toNumber(row[col.thickness]) : null;
@@ -195,7 +197,7 @@ function parseDateSheet(rows, sheetName) {
     }
     out.push({
       labNumber: col.labNumber != null ? labelOf(row[col.labNumber]) : '',
-      age, error: col.error != null ? toNumber(row[col.error]) : null,
+      age, error: pm ? toNumber(pm[2]) : (col.error != null ? toNumber(row[col.error]) : null),
       depth: toNumber(depth), thickness,
       material: col.material != null ? labelOf(row[col.material]) : '',
       method: col.method != null && labelOf(row[col.method]) ? labelOf(row[col.method]) : 'Carbon-14',
@@ -344,9 +346,28 @@ function chooseLayout(rows, h) {
   return 'samples-as-rows';
 }
 
+// Age-model output (e.g. clam/Bacon): depth + best/median age + min/max bounds
+function looksLikeAgeModelSheet(header) {
+  const l = header.map(labelOf);
+  return l.some((x) => RE.depth.test(x) || /^depth/i.test(x)) && l.some((x) => /^(best|median|mean|wmean|weighted mean|mid)\b/i.test(x)) &&
+    l.some((x) => /min|max|95|lower|upper|young|old/i.test(x));
+}
+
+function parseAgeModelSheet(rows, h, sheetName) {
+  const header = rows[h].map(labelOf);
+  const find = (re) => header.findIndex((x) => re.test(x));
+  const c = { depth: find(/depth/i), best: find(/^(best|median|mean|wmean|weighted mean|mid)\b/i), min: find(/min|lower|young/i), max: find(/max|upper|old/i) };
+  const points = rows.slice(h + 1).map((r) => ({
+    depth: toNumber(r[c.depth]), best: toNumber(r[c.best]),
+    min: c.min >= 0 ? toNumber(r[c.min]) : null, max: c.max >= 0 ? toNumber(r[c.max]) : null,
+  })).filter((p) => p.depth != null && p.best != null);
+  const model = /clam/i.test(sheetName) ? 'clam' : /bacon/i.test(sheetName) ? 'Bacon' : /oxcal/i.test(sheetName) ? 'OxCal' : '';
+  return { name: sheetName, model, points };
+}
+
 // Public entry: sheets = [{name, rows}] → analysis result
 export function analyzeWorkbook(sheets, fileName) {
-  const result = { datasets: [], metadata: [], geochron: [], notes: [], sheets: [] };
+  const result = { datasets: [], metadata: [], geochron: [], ageModels: [], notes: [], sheets: [] };
   for (const sheet of sheets) {
     const rows = trimTable(sheet.rows || []);
     const label = sheets.length > 1 ? `${fileName} › ${sheet.name}` : fileName;
@@ -366,6 +387,15 @@ export function analyzeWorkbook(sheets, fileName) {
       result.sheets.push({ name: sheet.name, kind: 'dates', detail: `${dates.length} dates` });
       continue;
     }
+    if (looksLikeAgeModelSheet(rows[h])) {
+      const am = parseAgeModelSheet(rows, h, sheet.name);
+      if (am.points.length) {
+        result.ageModels.push({ ...am, source: label });
+        if (am.model) result.metadata.push({ path: 'dataset.AgeModel', key: sheet.name, value: am.model, source: label });
+        result.sheets.push({ name: sheet.name, kind: 'age model', detail: `${am.points.length} depths${am.model ? `, ${am.model}` : ''}` });
+        continue;
+      }
+    }
     const layout = chooseLayout(rows, h);
     const parsed = layout === 'samples-as-rows'
       ? parseSamplesAsRows(rows, h, label, result.notes)
@@ -374,7 +404,7 @@ export function analyzeWorkbook(sheets, fileName) {
       result.sheets.push({ name: sheet.name, kind: 'skipped', detail: 'no numeric data found' });
       continue;
     }
-    result.datasets.push({ ...parsed, source: label });
+    result.datasets.push({ ...parsed, source: label, sheet: sheet.name });
     result.sheets.push({ name: sheet.name, kind: 'data', detail: `${parsed.samples.length} samples × ${parsed.variables.length} variables (${layout})` });
   }
   return result;

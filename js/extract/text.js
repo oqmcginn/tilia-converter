@@ -93,8 +93,8 @@ export function findCoordinates(text) {
 // ---------- altitude / water depth ----------
 // Both return every match so the caller can pick the one nearest the chosen site/coordinates.
 const ALT_PATS = [
-  /(?:elevation|altitude)\s*(?:of|is|was|at|:|=)?\s*(?:ca\.?|approximately|~|c\.)?\s*(\d[\d,]*(?:\.\d+)?)\s*m\b/gi,
-  /(\d[\d,]*(?:\.\d+)?)\s*m\s*(?:a\.?s\.?l\.?|above (?:mean )?sea[- ]level|elevation|altitude|asl)/gi,
+  /(?:elevation|altitude)\s*(?:of|is|was|at|:|=)?\s*(?:ca\.?|approximately|~|c\.)?\s*(\d[\d,]*(?:\.\d+)?)\s*m\b(?!\s*(?:long|wide|deep|thick))/gi,
+  /(\d[\d,]*(?:\.\d+)?)\s*m\s*(?:a\.?s\.?l\.?|above\s+(?:mean\s+)?sea[-\s]*level|elevation|altitude|asl)/gi,
   /(\d[\d,]*(?:\.\d+)?)\s*m\s*a\.?m\.?s\.?l/gi,
 ];
 const WD_PATS = [
@@ -113,7 +113,16 @@ function allMatches(text, pats, ok) {
   });
   return out.sort((x, y) => x.index - y.index);
 }
-export const findAltitudes = (text) => allMatches(text, ALT_PATS, (v) => v > -500 && v < 9000);
+// US papers often give elevation in feet ("6100’ above sea level", "6,100 ft asl"); converted to metres
+const ALT_FT = /(\d[\d,]*(?:\.\d+)?)\s*(?:’|'|′|ft\.?|feet)\s*(?:a\.?s\.?l\.?|above\s+(?:mean\s+)?sea[-\s]*level|elevation)/gi;
+export const findAltitudes = (text) => {
+  const m = allMatches(text, ALT_PATS, (v) => v > -500 && v < 9000);
+  for (const x of text.matchAll(ALT_FT)) {
+    const ft = parseFloat(x[1].replace(/,/g, ''));
+    if (ft > 0 && ft < 30000) m.push({ value: Math.round(ft * 0.3048), index: x.index, raw: `${x[0]} (= ${Math.round(ft * 0.3048)} m)`, rank: 3 });
+  }
+  return m.sort((a, b) => a.index - b.index);
+};
 export const findWaterDepths = (text) => allMatches(text, WD_PATS, (v) => v > 0 && v < 2000);
 export const findAltitude = (text) => findAltitudes(text)[0] || null;
 export const findWaterDepth = (text) => findWaterDepths(text)[0] || null;
@@ -133,11 +142,14 @@ const STOP_LEAD = /^(The|This|These|That|In|At|From|Our|A|An|Figure|Fig|Table|La
 
 // Candidate site names ranked by how often they occur, with a strong bonus for
 // appearing in the title (papers usually name their main site there).
-export function findSiteNames(text, title = '') {
+const LEADING_FEATURE = '(?:Lake|Lac|Lago|Lagoa|Laguna|Loch|Lough|Lagoon|Ciénaga)';
+export function findSiteNames(rawText, title = '') {
+  const text = String(rawText).replace(/\s+/g, ' '); // names often wrap across lines
   const counts = new Map();
   const res = [
     new RegExp(`(?<![\\w-])(${NAME} ${FEATURE})(?![\\w-])`, 'g'),
-    new RegExp(`(?<![\\w-])(${FEATURE} (?:(?:de|del|da|do|of) )?${NAME})(?![\\w-])`, 'g'),
+    // only lake-type words come before a name ("Lake Tahoe", "Laguna de Río Seco"), never "Creek Canyon"
+    new RegExp(`(?<![\\w-])(${LEADING_FEATURE} (?:(?:de|del|da|do|of) )?${NAME})(?![\\w-])`, 'g'),
   ];
   const onlyFeature = new RegExp(`^${FEATURE}$`);
   for (const re of res) {
@@ -145,15 +157,24 @@ export function findSiteNames(text, title = '') {
       let n = m[1].trim();
       for (let k = 0; k < 3 && STOP_LEAD.test(n); k++) n = n.replace(STOP_LEAD, '').trim();
       if (!n || onlyFeature.test(n) || n.split(' ').length > 5) continue;
-      const e = counts.get(n) || { value: n, count: 0, index: m.index };
+      const e = counts.get(n) || { value: n, count: 0, index: Math.max(0, String(rawText).indexOf(n.split(' ')[0])) };
       e.count += 1;
       counts.set(n, e);
     }
   }
   const t = title.toLowerCase();
-  const scored = [...counts.values()].map((e) => ({ ...e, inTitle: !!t && t.includes(e.value.toLowerCase()), score: e.count + (t && t.includes(e.value.toLowerCase()) ? 25 : 0) }));
+  const scored = [...counts.values()].map((e) => {
+    const esc = e.value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // "Range Creek Canyon", "Snake River Plain": the name is part of a region, not the site
+    const regional = (text.match(new RegExp(`${esc}\\s+(?:Canyon|Valley|Basin|Watershed|Mountains?|Range|National|State Park|Park|Plain|Plateau|Region|Drainage|Wilderness|Forest|City|County|Formation)\\b`, 'g')) || []).length;
+    // "Billy Slope Meadow (BSM)": authors define an abbreviation for their study site
+    const abbrev = new RegExp(`${esc}\\s*\\(([A-Z]{2,6})\\)`).test(text);
+    const inTitle = !!t && t.includes(e.value.toLowerCase()) && regional < e.count / 2;
+    const score = e.count - regional * 1.5 + (inTitle ? 25 : 0) + (abbrev ? 20 : 0);
+    return { ...e, inTitle, abbrev, score };
+  });
   // drop a name that is just a shorter piece of a better-scoring one ("Blue Hole" inside "Church's Blue Hole")
-  const kept = scored.filter((e) => !scored.some((o) => o !== e && o.value.length > e.value.length && o.value.includes(e.value) && o.score >= e.score / 3));
+  const kept = scored.filter((e) => e.score > 0).filter((e) => !scored.some((o) => o !== e && o.value.length > e.value.length && o.value.includes(e.value) && o.score >= e.score / 3));
   return kept.sort((a, b) => b.score - a.score).slice(0, 5);
 }
 
@@ -200,14 +221,19 @@ export function guessDatasetType(text) {
 // Keep the paper's own wording ("Modified Livingstone piston corer"), as hand conversions do.
 const DEVICE_RE = /\b((?:[Mm]odified |[Ss]quare[- ]rod |[Hh]and[- ]operated |[Tt]rack[- ]mounted )?(?:[A-Z][\w-]+(?:[- ](?:[A-Z][\w-]+))? )?(?:piston |gravity |percussion |peat |freeze |push |box |vibra|Russian[- ]type |)(?:corer|core sampler|sampler|coring device|coring system|auger)|[Ll]ong[- ]bladed shovel|Geoprobe[\w ]{0,12})\b/g;
 const DEVICE_STOP = /^(The|A|An|This|Our|Each|Two|Three|Both|Using|With|By|Sediment|Core|Cores|Lake|Surface)\b\s*/;
-export function findDevice(text) {
+export function findDevice(raw) {
+  const text = String(raw).replace(/\s+/g, ' ');
   const counts = new Map();
   for (const m of text.matchAll(DEVICE_RE)) {
     let v = m[1].trim();
     for (let k = 0; k < 2 && DEVICE_STOP.test(v); k++) v = v.replace(DEVICE_STOP, '');
     if (!/\w{3,}.*\s|shovel|Geoprobe/i.test(v) && !/[A-Z]/.test(v)) continue; // skip a bare "corer"
-    const key = v.toLowerCase();
+    // keep a stated diameter: "a 5 cm Livingstone piston corer" → "Livingstone piston corer (5cm)"
+    const dia = text.slice(Math.max(0, m.index - 12), m.index).match(/(\d+(?:\.\d+)?)\s*-?\s*cm\s*(?:diameter\s*)?$/i);
+    if (dia) v += ` (${dia[1]}cm)`;
+    const key = v.toLowerCase().replace(/\s*\(\d+(?:\.\d+)?cm\)$/, '');
     const e = counts.get(key) || { value: v, index: m.index, count: 0 };
+    if (dia && !/\(\d/.test(e.value)) e.value = v;
     e.count++;
     counts.set(key, e);
   }
@@ -237,7 +263,9 @@ export function findDepEnv(text, siteName) {
   const isLake = /\b(lake|lakes|lac|lago|lagoa|laguna|loch|lough|pond|tarn|mere|cocha|see)\b/i.test(site);
   const idx = site ? text.indexOf(site) : 0;
   if (/\b(marsh)\b/i.test(site)) return { value: 'Marsh', index: idx };
-  if (/\b(bog|fen|mire|moss|peatland|wetland|swamp|muskeg)\b/i.test(site)) return { value: 'Palustrine', index: idx };
+  // spring-fed sites are "Spring" in hand-made files (Billy Slope Meadow: "a spring-fed wet meadow")
+  if (/\b(spring|springs|cienega|ciénaga|seep)\b/i.test(site) || (site && /spring[- ]fed/i.test(near))) return { value: 'Spring', index: idx };
+  if (/\b(bog|fen|mire|moss|peatland|wetland|swamp|muskeg|meadow)\b/i.test(site)) return { value: 'Palustrine', index: idx };
   if (/\bcave\b/i.test(site)) return { value: 'Cave', index: idx };
   if (isLake || /\blake\b/i.test(near)) {
     for (const [env, re] of origin) if (re.test(near)) return { value: env, index: idx };
@@ -463,9 +491,9 @@ export function extractFromPublication(pages, fileName, { title = '', site = '' 
   if (/\bcor(e|es|ed|ing)\b/i.test(text)) add('collectionUnit.CollectionType', 'Core', null, 0.4, 'text mentions coring');
 
   // age-model software named in the methods ("…modelled in Bacon…")
-  const models = [['Bacon', /\bBacon\b|rbacon/g], ['OxCal', /\bOxCal\b/g], ['clam', /\bclam\b/g], ['Bchron', /\bBchron\b/g]]
+  const models = [['Bacon', /\bbacon\b|rbacon/gi], ['OxCal', /\boxcal\b/gi], ['clam', /\bclam\b/g], ['Bchron', /\bbchron\b/gi]]
     .map(([v, re]) => ({ v, n: (text.match(re) || []).length })).filter((m) => m.n).sort((a, b) => b.n - a.n);
-  if (models[0]) add('dataset.AgeModel', models[0].v, text.search(new RegExp(models[0].v)), 0.6);
+  if (models[0]) add('dataset.AgeModel', models[0].v, text.search(new RegExp(models[0].v, 'i')), 0.6);
 
   const yr = findYear(text);
   if (yr) add('publication.Year', yr.value, yr.index, 0.3);

@@ -20,7 +20,7 @@ import { findCoordinates, findDates, findAltitude, findDOI, findGeography, findS
 import { analyzeWorkbook, toNumber, splitLabel, normalizeUnit, parseCoordValue } from '../js/extract/spreadsheet.js';
 import { parseRIS, parseBibTeX, splitName, formatCitation } from '../js/extract/bib.js';
 import { buildTilia, validate, makeCodes, dateToSerial } from '../js/tilia.js';
-import { findTaxon } from '../js/record.js';
+import { findTaxon, emptyState, pickDataset, applyAgeModel } from '../js/record.js';
 import { guessPollenGroup } from '../js/lookups.js';
 import { orcidChecksumOK, normalizeOrcid, findOrcidsInText, nameAgreement, affiliationOverlap, scoreCandidate, decide, resolveOrcids, findAffiliations } from '../js/orcid.js';
 
@@ -215,6 +215,46 @@ test('validate flags missing essentials', () => {
 });
 test('Pollen groups', () => { eq(guessPollenGroup('Pinus strobus'), 'TRSH'); eq(guessPollenGroup('Lycopodium spike'), 'LABO'); eq(guessPollenGroup('Artemisia'), 'UPHE'); eq(guessPollenGroup('Typha latifolia'), 'AQVP'); });
 
+
+// ---------- lessons from Billy Slope Meadow ----------
+test('Taxon labels become Neotoma names', () => {
+  const cases = { 'Cheno.Am': 'Amaranthaceae', 'Salicaceae populus type': 'Populus-type', 'Fagaceae chrysolepis': 'Chrysolepis-type', 'Tricolpate unk': 'Unknown (tricolpate)', 'zea mays': 'Zea mays', 'Onograceae-epilobium': 'Epilobium-type', 'Rosaceae cercocarphus': 'Cercocarpus-type', 'Asteracea.cichorium.taraxacum': 'Taraxacum-type' };
+  for (const [label, want] of Object.entries(cases)) eq(findTaxon(label)?.[0], want, label);
+});
+test('cmTop header, "± in one cell" dates, and age-model sheets', () => {
+  const r = analyzeWorkbook([
+    { name: 'Pollen', rows: [['Depth', 'Pinus', 'Picea'], [0, 1, 2], [10, 3, 4]] },
+    { name: 'Charcoal', rows: [['cmTop  (cm)', 'age (top) cal yr bp', 'charCount (#)'], [0, -58, 70], [1, -44, 109], [2, -23, 97]] },
+    { name: 'Radiocarbon Ages', rows: [['Depth', '14C Age', 'Calibrated Age', 'Lab ID'], ['147-148', '2780 ± 35', '2789-2956', 'UGAMS-6410']] },
+    { name: 'Clam Age Model', rows: [['depth', 'min95%', 'max95%', 'best'], [0, -89, -28, -58], [10, 40, 120, 80]] },
+  ], 'bsm.xlsx');
+  eq(r.datasets.find((d) => d.sheet === 'Charcoal').samples.map((s) => s.depth), [0, 1, 2]);
+  eq([r.geochron[0].age, r.geochron[0].error, r.geochron[0].depth, r.geochron[0].thickness], [2780, 35, 147.5, 1]);
+  eq([r.ageModels.length, r.ageModels[0].model, r.ageModels[0].points.length], [1, 'clam', 2]);
+});
+test('Sheet matching the dataset type is chosen; ages come from the age model', () => {
+  const st = emptyState();
+  st.values['dataset.DatasetType'] = 'pollen';
+  st.datasets = [{ sheet: 'Charcoal', samples: Array.from({ length: 50 }, (_, i) => ({ depth: i })), variables: [{ values: [] }, { values: [] }] },
+    { sheet: 'Pollen', samples: [{ depth: 0 }, { depth: 5 }], variables: [{ values: [] }] }];
+  st.ageModels = [{ points: [{ depth: 0, best: -58, min: -89, max: -28 }, { depth: 10, best: 80, min: 40, max: 120 }] }];
+  pickDataset(st); applyAgeModel(st);
+  eq(st.datasets[st.activeDataset].sheet, 'Pollen');
+  eq(st.datasets[1].samples.map((s) => [s.age, s.ageYoung, s.ageOld]), [[-58, -89, -28], [11, -24, 46]]);
+});
+test('Age bounds round outward to tens', () => {
+  const doc = parse(buildTilia({ ...rec, data: { ...rec.data, samples: [{ depth: 0, age: -58 }, { depth: 5, age: 2312 }] } }));
+  eq([doc.querySelector('AgeBoundOlder').textContent, doc.querySelector('AgeBoundYounger').textContent], ['2320', '-60']);
+});
+test('Spring-fed meadow, altitude in feet, region vs site', () => {
+  const found = extractFromPublication([{ page: 1, text: 'Evidence from Range Creek Canyon. We collected a core from Billy Slope Meadow (BSM), a spring-fed wet meadow in Range Creek Canyon at an elevation of 6100’ above sea\nlevel. Range Creek Canyon is remote. We cored BSM in June 2009 using a 5 cm Livingstone piston\ncorer.' }], 'p.pdf', { title: 'Farmers of Range Creek Canyon' });
+  const get = (p) => found.find((f) => f.path === p)?.value;
+  eq(get('site.SiteName'), 'Billy Slope Meadow');
+  eq(get('site.Altitude'), 1859);
+  eq(get('collectionUnit.DepositionalEnvironment'), 'Spring');
+  eq(get('collectionUnit.CollectionDevice'), 'Livingstone piston corer (5cm)');
+  eq(get('collectionUnit.CollectionDate'), '2009-06');
+});
 
 // ---------- ORCID ----------
 test('Hyphenated initials', () => eq(splitName('Knorr, Karl-Heinz').LeadingInitials, 'K.-H.'));

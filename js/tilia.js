@@ -134,6 +134,10 @@ export function buildTilia(record, options = {}) {
     // Row 1 = depths, row 2 = analysis-unit names, then "#" sample rows, then one row per variable.
     const metaRows = [];
     if (hasAges) metaRows.push({ code: '#Chron1', name: chronName, vals: S.map((s) => s.age) });
+    // modelled age range, as Tilia files from Bacon/clam output carry it
+    const modelLabel = dataset.AgeModel || chronName;
+    if (hasAges && options.includeAgeRanges && S.some((s) => s.ageYoung != null)) metaRows.push({ code: '#Chron1.Young', name: `${modelLabel} min age`, vals: S.map((s) => s.ageYoung ?? null) });
+    if (hasAges && options.includeAgeRanges && S.some((s) => s.ageOld != null)) metaRows.push({ code: '#Chron1.Old', name: `${modelLabel} max age`, vals: S.map((s) => s.ageOld ?? null) });
     if (S.some((s) => s.analyst)) metaRows.push({ code: '#Samp.Analyst', name: 'Sample Analyst', vals: S.map((s) => s.analyst || null), contact: true });
     const firstVarRow = 3 + metaRows.length;
     const descCols = [
@@ -193,7 +197,8 @@ export function buildTilia(record, options = {}) {
   x.leaf('Country', site.Country);
   x.leaf('State', site.State);
   x.leaf('County', site.County);
-  x.leaf('SiteDescription', [site.SiteDescription, site.Notes].filter(Boolean).join('\n\n'));
+  x.leaf('SiteDescription', site.SiteDescription);
+  x.leaf('Notes', site.Notes);
   x.close('Site');
 
   // ---- Collection unit ----
@@ -267,8 +272,9 @@ export function buildTilia(record, options = {}) {
     x.leaf('AgeUnits', dataset.AgeUnits || 'Calibrated radiocarbon years BP');
     x.leaf('Default', 'True');
     x.leaf('Model', dataset.AgeModel || chronName);
-    x.leaf('AgeBoundOlder', Math.round(Math.max(...ages)));
-    x.leaf('AgeBoundYounger', Math.round(Math.min(...ages)));
+    // bounds rounded outward to the nearest 10 years, as in hand-made files (2312 → 2320, -58 → -60)
+    x.leaf('AgeBoundOlder', Math.ceil(Math.max(...ages) / 10) * 10);
+    x.leaf('AgeBoundYounger', Math.floor(Math.min(...ages) / 10) * 10);
     const preparers = inv.length ? inv : [];
     if (preparers.length) {
       x.leaf('PreparersText', preparers.map((id) => contacts[id - 1].ShortContactName || contacts[id - 1].FullContactName).join('; '));

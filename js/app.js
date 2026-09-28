@@ -5,7 +5,7 @@ import { readSpreadsheet, readPdf, readText, fileKind, download } from './io.js'
 import { buildTilia, validate, pubType } from './tilia.js';
 import {
   emptyState, addCandidate, setValue, addContact, addPublication, addDates, applyTypeDefaults,
-  toRecord, FIELD_DEFS, ROLES,
+  toRecord, FIELD_DEFS, ROLES, pickDataset, applyAgeModel,
 } from './record.js';
 import { DATASET_TYPES, COLLECTION_TYPES, DEPOSITIONAL_ENVIRONMENTS } from './lookups.js';
 import { MODELS, extractWithClaude } from './ai.js';
@@ -96,9 +96,9 @@ async function ingestSpreadsheet(file, src) {
     ds.variables.forEach((v) => { v._unitGuess = normalizeUnit(v.unitHint, v.values); });
     state.datasets.push(ds);
   }
-  if (res.datasets.length && state.datasets.length === res.datasets.length) {
-    // first data: pick the largest sheet
-    state.activeDataset = state.datasets.reduce((best, d, i, all) => (d.variables.length * d.samples.length > all[best].variables.length * all[best].samples.length ? i : best), 0);
+  state.ageModels = [...(state.ageModels || []), ...res.ageModels];
+  if (res.datasets.length > 1) {
+    state.notes.push(`${file.name} has ${res.datasets.length} data sheets (${res.datasets.map((d) => d.sheet).join(', ')}). A Tilia file holds one dataset, so choose the sheet on the Data tab and convert each proxy separately.`);
   }
   for (const m of res.metadata) applySheetMeta(m);
   addDates(state, res.geochron);
@@ -107,7 +107,8 @@ async function ingestSpreadsheet(file, src) {
 }
 
 function applySheetMeta(m) {
-  const cand = { value: m.value, source: `${m.source} · “${m.key}”`, confidence: 0.9 };
+  // a sheet *named* "Clam Age Model" is weaker evidence than the paper's own methods text
+  const cand = { value: m.value, source: `${m.source} · “${m.key}”`, confidence: m.path === 'dataset.AgeModel' && m.key !== 'Age model' ? 0.55 : 0.9 };
   if (m.path === 'site.LatNorth' || m.path === 'site.LongEast') {
     const v = parseCoordValue(m.value, m.path === 'site.LongEast');
     // keep text we couldn't parse visible (low confidence) rather than dropping it
@@ -196,6 +197,8 @@ function suggestDerived() {
 
 function finishIngest() {
   suggestDerived();
+  pickDataset(state);
+  applyAgeModel(state);
   applyTypeDefaults(state);
   renderAll();
   persist();
@@ -424,7 +427,7 @@ function fieldGrid(section, only) {
 function fieldEl(path, label, type, placeholder) {
   const value = state.values[path] ?? '';
   const cands = state.candidates[path] || [];
-  const onInput = (v) => { setValue(state, path, v); if (path === 'dataset.DatasetType') { applyTypeDefaults(state); } refreshExport(); persist(); updateProv(); };
+  const onInput = (v) => { setValue(state, path, v); if (path === 'dataset.DatasetType') { pickDataset(state); applyAgeModel(state); applyTypeDefaults(state); } refreshExport(); persist(); updateProv(); };
   const onCommit = () => {
     if (path === 'site.SiteName') siteChosen(state.values[path]);
     if (path === 'site.LatNorth' || path === 'site.LongEast') scheduleGeocode();
@@ -546,7 +549,7 @@ function renderData(panel) {
   const tools = h('div', { class: 'tbl-tools' });
   if (state.datasets.length > 1) {
     tools.append(h('label', { class: 'field', style: 'margin:0;min-width:260px' }, h('span', {}, 'Sheet to use'),
-      h('select', { onchange: (e) => { state.activeDataset = Number(e.target.value); renderAll(); persist(); } },
+      h('select', { onchange: (e) => { state.activeDataset = Number(e.target.value); state.datasetChosen = true; applyAgeModel(state); applyTypeDefaults(state); renderAll(); persist(); } },
         state.datasets.map((d, i) => h('option', { value: i, selected: i === state.activeDataset }, `${d.source} — ${d.samples.length}×${d.variables.length}`)))));
   }
   panel.append(tools);
@@ -775,6 +778,7 @@ function refreshExport() {
 function currentXML() {
   return buildTilia(toRecord(state), {
     includeAges: $('#opt-ages').checked,
+    includeAgeRanges: $('#opt-agerange').checked,
   });
 }
 
@@ -803,6 +807,7 @@ function init() {
     if (k) { $('#ai-key').value = k; $('#ai-remember').checked = true; }
   } catch { /* ignore */ }
   $('#opt-ages').checked = state.options.includeAges !== false;
+  $('#opt-agerange').checked = !!state.options.includeAgeRanges;
 
   const fileInput = $('#file-input');
   fileInput.addEventListener('change', () => { handleFiles([...fileInput.files]); fileInput.value = ''; });
@@ -818,7 +823,7 @@ function init() {
   $('#doi-form').addEventListener('submit', (e) => { e.preventDefault(); const v = $('#doi-input').value; if (v.trim()) { addDOI(v); $('#doi-input').value = ''; } });
   $('#ai-run').addEventListener('click', runClaude);
 
-  for (const [id, key] of [['#opt-ages', 'includeAges']]) {
+  for (const [id, key] of [['#opt-ages', 'includeAges'], ['#opt-agerange', 'includeAgeRanges']]) {
     $(id).addEventListener('change', (e) => { state.options[key] = e.target.checked; refreshExport(); persist(); });
   }
 
