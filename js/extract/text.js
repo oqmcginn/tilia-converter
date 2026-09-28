@@ -154,7 +154,7 @@ export function findSiteNames(rawText, title = '') {
   const onlyFeature = new RegExp(`^${FEATURE}$`);
   for (const re of res) {
     for (const m of text.matchAll(re)) {
-      let n = m[1].trim();
+      let n = m[1].trim().replace(/’/g, "'");
       for (let k = 0; k < 3 && STOP_LEAD.test(n); k++) n = n.replace(STOP_LEAD, '').trim();
       if (!n || onlyFeature.test(n) || n.split(' ').length > 5) continue;
       const e = counts.get(n) || { value: n, count: 0, index: Math.max(0, String(rawText).indexOf(n.split(' ')[0])) };
@@ -206,8 +206,16 @@ export function findGeography(text) {
   let state = null;
   if (country?.value === 'United States') state = topState || null;
   if (country?.value === 'Canada') state = topProv || null;
-  const county = text.match(/\b([A-Z][a-z]+(?: [A-Z][a-z]+)?) County\b/);
-  return { country, state, county: county ? { value: county[1], index: county.index } : null };
+  // "in Comal\nCounty": tolerate line breaks; ignore the reference list, where other
+  // counties appear in cited titles ("…fauna from Crockett County, Texas")
+  const body = text.split(/\n\s*(?:References|Bibliography|Literature cited|References cited)\s*\n/i)[0];
+  const counties = [...body.matchAll(/\b([A-Z][a-z]+(?:\s[A-Z][a-z]+)?)\s+(?:County|Parish|Borough)\b/g)]
+    .filter((m) => !/^(The|This|Each|Which|Our|Same|Other)$/.test(m[1]))
+    .map((m) => ({ value: m[1].replace(/\s+/g, ' '), index: m.index }));
+  const tally = new Map();
+  counties.forEach((c) => tally.set(c.value, (tally.get(c.value) || 0) + 1));
+  const county = counties.sort((a, b) => tally.get(b.value) - tally.get(a.value) || a.index - b.index)[0] || null;
+  return { country, state, county };
 }
 
 // ---------- dataset type / device / environment ----------
@@ -266,7 +274,8 @@ export function findDepEnv(text, siteName) {
   // spring-fed sites are "Spring" in hand-made files (Billy Slope Meadow: "a spring-fed wet meadow")
   if (/\b(spring|springs|cienega|ciénaga|seep)\b/i.test(site) || (site && /spring[- ]fed/i.test(near))) return { value: 'Spring', index: idx };
   if (/\b(bog|fen|mire|moss|peatland|wetland|swamp|muskeg|meadow)\b/i.test(site)) return { value: 'Palustrine', index: idx };
-  if (/\bcave\b/i.test(site)) return { value: 'Cave', index: idx };
+  // Neotoma cave sub-environments (hand-made files use "Stream Deposited Cave Sediment")
+  if (/\b(cave|cavern|sinkhole)\b/i.test(site)) return { value: /\b(stream|fluvial|underground river|conduit)\b/i.test(near) ? 'Stream Deposited Cave Sediment' : 'Cave', index: idx };
   if (isLake || /\blake\b/i.test(near)) {
     for (const [env, re] of origin) if (re.test(near)) return { value: env, index: idx };
     return { value: 'Natural Lake', index: idx };
@@ -488,7 +497,17 @@ export function extractFromPublication(pages, fileName, { title = '', site = '' 
   if (env) add('collectionUnit.DepositionalEnvironment', env.value, env.index, 0.45);
   const cd = findCollectionDate(text);
   if (cd) add('collectionUnit.CollectionDate', cd.value, cd.index, 0.5, cd.raw);
-  if (/\bcor(e|es|ed|ing)\b/i.test(text)) add('collectionUnit.CollectionType', 'Core', null, 0.4, 'text mentions coring');
+  // "core" also appears in URLs (cambridge.org/core) and prose; require coring language
+  const coring = text.match(/\b(sediment cores?|cored|coring|corer|piston cores?|cores? (?:was|were) (?:taken|collected|retrieved|recovered|obtained))\b/i);
+  // peat monoliths, cut banks and exposures are "Section" in hand-made files
+  const section = text.match(/\b(peat monoliths?|monoliths?|peat blocks?|exposed sections?|stratigraphic sections?|cut ?banks?|outcrops?|exposures?)\b/i);
+  const monolithCount = (text.match(/\bmonoliths?\b|\bpeat blocks?\b|\bexposed sections?\b/gi) || []).length;
+  const coringCount = (text.match(/\b(sediment cores?|cored|coring|corer)\b/gi) || []).length;
+  if (section && monolithCount >= Math.max(1, coringCount)) add('collectionUnit.CollectionType', 'Section', section.index, 0.55, section[0]);
+  else if (coring) add('collectionUnit.CollectionType', 'Core', coring.index, 0.5, coring[0]);
+  else if (/\b(excavat|specimens? (?:were )?collected|fossils? (?:were )?collected|test pit|trench)\w*/i.test(text) || /\b(cave|rockshelter|rock shelter)\b/i.test(siteName || '')) {
+    add('collectionUnit.CollectionType', 'Excavation', null, 0.45, 'fossils collected, no coring described');
+  }
 
   // age-model software named in the methods ("…modelled in Bacon…")
   const models = [['Bacon', /\bbacon\b|rbacon/gi], ['OxCal', /\boxcal\b/gi], ['clam', /\bclam\b/g], ['Bchron', /\bbchron\b/gi]]

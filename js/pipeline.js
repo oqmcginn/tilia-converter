@@ -6,6 +6,7 @@ import { extractFromPublication } from './extract/text.js';
 import { crossrefLookup, crossrefSearchTitle } from './extract/bib.js';
 import { addCandidate, addPublication, addDates } from './record.js';
 import { findOrcidsInText, findAffiliations } from './orcid.js';
+import { parseMaterialSections, occurrencesToDataset } from './extract/fauna.js';
 
 export async function ingestPublication(state, pages, fileName, { title = '', crossref = true, site = '' } = {}) {
   const found = extractFromPublication(pages, fileName, { title, site });
@@ -46,6 +47,19 @@ export async function ingestPublication(state, pages, fileName, { title = '', cr
   if (pub.DOI || pub.ArticleTitle) addPublication(state, pub, fileName);
 
   const text = pages.map((p) => p.text).join('\n');
+
+  // vertebrate papers: specimen lists in "Material and provenience" sections become the data table
+  const occ = parseMaterialSections(text);
+  if (occ.length) {
+    const ds = occurrencesToDataset(occ, fileName);
+    state.datasets.push(ds);
+    notes.push(`${occ.length} specimens → ${ds.variables.length} taxon × element rows`);
+    const flagged = occ.filter((o) => o.note);
+    if (flagged.length) (state.notes ||= []).push(`${fileName}: ${flagged.map((o) => o.catalog).join(', ')} — ${flagged[0].note}; the last zone given was used.`);
+    const noProv = occ.filter((o) => o.unit === 'Assemblage').length;
+    if (noProv) (state.notes ||= []).push(`${fileName}: ${noProv} specimen(s) without a zone were put in an "Assemblage" column.`);
+  }
+
   const os = (state.orcidSources ||= { affiliations: [], printed: [] });
   os.affiliations = [...new Set([...os.affiliations, ...findAffiliations(text)])];
   for (const p of findOrcidsInText(text)) {

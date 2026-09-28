@@ -30,7 +30,7 @@ export const COLLECTION_TYPES = ['Core', 'Composite', 'Section', 'Excavation', '
 // Terms used in the lab's hand-made Tilia files come first
 export const DEPOSITIONAL_ENVIRONMENTS = [
   'Natural Lake', 'Glacial Origin Lake', 'Cirque Lake', 'Landslide Origin Lake', 'Palustrine', 'Marsh', 'Floodplain',
-  'Terrestrial', 'Marine', 'Kettle Lake', 'Pond', 'Bog', 'Fen', 'Mire', 'Swamp', 'Cave', 'Rockshelter', 'Fluvial',
+  'Terrestrial', 'Marine', 'Spring', 'Stream Deposited Cave Sediment', 'Cave', 'Kettle Lake', 'Pond', 'Bog', 'Fen', 'Mire', 'Swamp', 'Cave', 'Rockshelter', 'Fluvial',
   'Alluvial', 'Estuarine', 'Lacustrine', 'Spring', 'Midden', 'Archaeological',
 ];
 

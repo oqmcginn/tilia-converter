@@ -21,6 +21,7 @@ import { analyzeWorkbook, toNumber, splitLabel, normalizeUnit, parseCoordValue }
 import { parseRIS, parseBibTeX, splitName, formatCitation } from '../js/extract/bib.js';
 import { buildTilia, validate, makeCodes, dateToSerial } from '../js/tilia.js';
 import { findTaxon, emptyState, pickDataset, applyAgeModel } from '../js/record.js';
+import { parseMaterialSections, occurrencesToDataset } from '../js/extract/fauna.js';
 import { guessPollenGroup } from '../js/lookups.js';
 import { orcidChecksumOK, normalizeOrcid, findOrcidsInText, nameAgreement, affiliationOverlap, scoreCandidate, decide, resolveOrcids, findAffiliations } from '../js/orcid.js';
 
@@ -208,7 +209,7 @@ test('Ages option drops #Chron1 and the age model', () => {
 });
 test('dateToSerial', () => { eq(dateToSerial('2015-07'), 42186); eq(dateToSerial('1993'), 33970); eq(dateToSerial(''), null); });
 test('Taxon lookup gives real codes', () => { eq(findTaxon('Pinus')?.[1], 'Pin'); eq(findTaxon('poaceae')?.[4], 'UPHE'); eq(findTaxon('Not a taxon'), null); });
-test('makeCodes unique', () => eq(makeCodes([{ name: 'Pinus' }, { name: 'Pinus strobus' }, { name: 'Pinus' }, { name: 'X', code: 'Abc' }]), ['Pin', 'Pin.st', 'Pin2', 'Abc']));
+test('makeCodes: one code per taxon, unique across taxa', () => eq(makeCodes([{ name: 'Pinus' }, { name: 'Pinus strobus' }, { name: 'Pinus' }, { name: 'Pinaceae' }, { name: 'X', code: 'Abc' }, { name: 'Equus', code: 'Equ' }, { name: 'Equus' }]), ['Pin', 'Pin.st', 'Pin', 'Pin2', 'Abc', 'Equ', 'Equ']));
 test('validate flags missing essentials', () => {
   const v = validate({ site: {}, dataset: {}, contacts: [], data: null }).map((i) => i.msg).join(' ');
   ok(/Site name/.test(v) && /coordinates/.test(v) && /Dataset type/.test(v));
@@ -255,6 +256,30 @@ test('Spring-fed meadow, altitude in feet, region vs site', () => {
   eq(get('collectionUnit.CollectionDevice'), 'Livingstone piston corer (5cm)');
   eq(get('collectionUnit.CollectionDate'), '2009-06');
 });
+
+test('Vertebrate "Material and provenience" sections become a zone × element table', () => {
+  const text = `Family Equidae Gray, 1821
+Equus sp.
+Material and provenience
+TxVP 44302-21, metatarsal III, right; TxVP 44302-105, P3 or P4, right; TxVP 44302-114, M3, left; TxVP 44302-116, P3 or P4, left; TxVP 44302-126, dp3, right.
+Zone 14 (TxVP 44302-105), Zone 15 (blue clay: TxVP 44302-114 through TxVP 44302-116; surface: TxVP 44302-126).
+Diagnosis and description
+Large.
+Homotherium serum Cope, 1893
+Material and provenience
+TxVP 44302-31, P4, right; TxVP 44302-53, atlas (Fig. 6). Zones 11 (TxVP 44302-31).
+Description and discussion
+Blade-like.`;
+  const occ = parseMaterialSections('\n' + text);
+  eq(occ.map((o) => [o.taxon, o.element, o.unit]), [
+    ['Equus sp.', 'metatarsal, third', 'Assemblage'], ['Equus sp.', 'tooth, premolar', 'Zone 14'], ['Equus sp.', 'tooth, third molar', 'Zone 15 (blue-green clay)'],
+    ['Equus sp.', 'tooth, premolar', 'Zone 15 (blue-green clay)'], ['Equus sp.', 'tooth, third deciduous premolar', 'Zone 15 (surface)'],
+    ['Homotherium serum', 'tooth, fourth premolar', 'Zone 11'], ['Homotherium serum', 'vertebra, atlas', 'Assemblage']]);
+  const ds = occurrencesToDataset(occ, 'p.pdf');
+  eq(ds.samples.map((s) => s.name), ['Zone 15 (surface)', 'Zone 15 (blue-green clay)', 'Zone 14', 'Zone 11', 'Assemblage']);
+  eq(ds.variables.find((v) => v.element === 'tooth, premolar').values, [null, 1, 1, null, null]);
+});
+test('Open nomenclature maps to lookup names', () => { eq(findTaxon('Equus sp.')?.[0], 'Equus'); eq(findTaxon('Testudinidae (indeterminate)')?.[0], 'Testudinidae'); eq(findTaxon('Hesperotestudo sp. (giant form)')?.[0], 'Hesperotestudo'); });
 
 // ---------- ORCID ----------
 test('Hyphenated initials', () => eq(splitName('Knorr, Karl-Heinz').LeadingInitials, 'K.-H.'));

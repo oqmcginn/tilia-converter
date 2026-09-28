@@ -33,18 +33,24 @@ export function dateToSerial(value) {
   return Math.round((t - Date.UTC(1899, 11, 30)) / 864e5);
 }
 
-// Tilia codes must be unique; lookup codes (real Neotoma codes) are kept, others generated.
+// One code per taxon: rows for the same taxon with different elements share it (as in
+// hand-made vertebrate files: every Megalonyx row is "Mgx.je"). Lookup codes are kept;
+// others are generated and never reused for a different taxon.
 export function makeCodes(variables) {
-  const used = new Set();
+  const byName = new Map();
+  const used = new Set(variables.filter((v) => v.code).map((v) => v.code));
   return variables.map((v) => {
-    if (v.code && !used.has(v.code)) { used.add(v.code); return v.code; }
-    const words = String(v.name).replace(/[^A-Za-z0-9 ]/g, ' ').trim().split(/\s+/).filter(Boolean);
+    const name = String(v.name);
+    if (v.code) { if (!byName.has(name)) byName.set(name, v.code); return byName.get(name) === v.code ? v.code : byName.get(name); }
+    if (byName.has(name)) return byName.get(name);
+    const words = name.replace(/[^A-Za-z0-9 ]/g, ' ').trim().split(/\s+/).filter(Boolean);
     let base = words.length ? words[0].slice(0, 3) : 'Var';
     base = base[0].toUpperCase() + base.slice(1).toLowerCase();
     if (words[1]) base += '.' + words[1].slice(0, 2).toLowerCase();
     let code = base, i = 2;
     while (used.has(code)) code = `${base}${i++}`;
     used.add(code);
+    byName.set(name, code);
     return code;
   });
 }

@@ -84,6 +84,8 @@ Always review the file in Tilia (lookups, taxon names, chronology) before you su
 
 With the paper *and* its data workbook (Billy Slope Meadow), every metadata field, all dates, the age model and all 1,240 spreadsheet cells match the expert's file.
 
+**Vertebrate papers without a spreadsheet.** The "Material and provenience" (or "Referred material") sections are read specimen by specimen: taxon, element and zone, including ranges ("TxVP 44302-114 through TxVP 44302-120"), sub-units ("Zone 15 (surface: …; blue-green clay: …)") and specimens without provenience (put in an "Assemblage" column). Anatomical shorthand becomes Neotoma element terms ("P4" → "tooth, fourth premolar", "metatarsal III" → "metatarsal, third"), and each zone × taxon × element is counted as NISP. On Bender's Cave this reproduces the expert's 13 zone columns and 36 of their 41 data cells; the rest are expert judgement calls, such as genus-level identifications.
+
 **Multi-proxy workbooks.** Sheets are recognised as data, dates (including "2780 ± 35" cells), or age-model output (depth + best + min/max, e.g. clam or Bacon). The sheet matching the dataset type is converted. Sample ages and their modelled ranges come from the age-model sheet. Spreadsheet taxon labels are mapped to Neotoma names ("Salicaceae populus type" → Populus-type, "Cheno.Am" → Amaranthaceae).
 
 Scanned PDFs, per-site values in complex tables, and anything not stated in the paper need Claude extraction or manual entry.

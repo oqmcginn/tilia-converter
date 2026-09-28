@@ -542,7 +542,7 @@ async function initMap() {
 // ----- Data tab -----
 function renderData(panel) {
   if (!state.datasets.length) {
-    panel.append(h('div', { class: 'empty-state' }, h('strong', {}, 'No data yet'), 'Add a spreadsheet with your counts or measurements. Samples can be rows or columns — both layouts are detected.'));
+    panel.append(h('div', { class: 'empty-state' }, h('strong', {}, 'No data yet'), 'Add a spreadsheet with your counts or measurements (samples as rows or columns), or a vertebrate paper with “Material and provenience” sections — specimens are tallied by zone automatically.'));
     return;
   }
   const ds = state.datasets[state.activeDataset];
@@ -563,7 +563,7 @@ function renderData(panel) {
     depths.length ? h('div', { class: 'stat' }, h('b', {}, `${fmt(Math.min(...depths))}–${fmt(Math.max(...depths))}`), h('span', {}, 'depth (cm)')) : null,
     ages.length ? h('div', { class: 'stat' }, h('b', {}, `${fmt(Math.min(...ages))}–${fmt(Math.max(...ages))}`), h('span', {}, 'age')) : null,
     h('div', { class: 'stat' }, h('b', {}, ds.variables.filter((v) => v.lookup).length), h('span', {}, 'matched to Neotoma taxa')),
-    h('div', { class: 'stat' }, h('b', { style: 'font-size:13px;padding:3px 0' }, ds.layout === 'samples-as-rows' ? 'samples = rows' : 'samples = columns'), h('span', {}, 'layout detected')),
+    h('div', { class: 'stat' }, h('b', { style: 'font-size:13px;padding:3px 0' }, ds.layout === 'specimens-from-text' ? 'specimens in paper' : ds.layout === 'samples-as-rows' ? 'samples = rows' : 'samples = columns'), h('span', {}, 'layout detected')),
   ));
   if (ds.roles && Object.keys(ds.roles).length) {
     panel.append(h('p', { class: 'muted' }, 'Sample columns recognised: ', Object.entries(ds.roles).map(([k, v]) => `${k} ← “${v}”`).join(', ')));

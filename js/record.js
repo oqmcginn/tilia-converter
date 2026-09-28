@@ -19,6 +19,7 @@ const ALIASES = [
   [/^tricolporate\b.*\b(unk|unknown|indet)/i, 'Unknown (tricolporate)'],
   [/^(unk|unknown)\b.*\btricolpate/i, 'Unknown (tricolpate)'],
   [/^(unk|unknown)\b.*\btricolporate/i, 'Unknown (tricolporate)'],
+  [/^cetartiodactyla\b/i, 'Artiodactyla'],
 ];
 const cap = (w) => (w ? w[0].toUpperCase() + w.slice(1).toLowerCase() : w);
 function lev(a, b) {
@@ -30,7 +31,9 @@ function lev(a, b) {
 }
 function taxonCandidates(label) {
   // "Onograceae-epilobium": a hyphen after a family name separates it from the genus
-  const base = String(label || '').replace(/[._]+/g, ' ').replace(/(ceae?)-(?=[a-z])/gi, '$1 ').replace(/\s+/g, ' ').trim();
+  // open nomenclature: "Equus sp.", "Testudinidae (indeterminate)", "Hesperotestudo sp. (giant form)", "cf. Bison"
+  const bare = String(label || '').replace(/\s*\((?:indeterminate|indet\.?|giant form|large form|small form)\)/gi, '').replace(/\b(?:cf|aff)\.\s*/gi, '').replace(/\s+spp?\.?(?=\s|$)/gi, '');
+  const base = bare.replace(/[._]+/g, ' ').replace(/(ceae?)-(?=[a-z])/gi, '$1 ').replace(/\s+/g, ' ').trim();
   const out = [base];
   for (const [re, name] of ALIASES) if (re.test(base)) out.push(name);
   const words = base.split(' ');
