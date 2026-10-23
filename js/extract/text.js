@@ -46,11 +46,15 @@ function dmsToDecimal(d, m, s, hemi) {
 
 export function normalizeCoordText(text) {
   return String(text)
+    // lost glyphs come through as control characters ("N \u0000 76°…")
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, ' ')
     .replace(/ | | /g, ' ')
     .replace(/−/g, '-')
     // Wiley glyph loss: "33 8 57 0 55 00 N" → 33°57′55″N ; "69 ˚ 19 0 24,48 00" → 69°19′24.48″
     .replace(/\b(\d{1,3}) ?(?:8|[°º˚◦֯]) ?(\d{1,2}) 0 (\d{1,2}(?:[.,]\d+)?) 00\b/g, '$1°$2′$3″')
     .replace(/\b(\d{1,3}) ?[°º˚◦֯] ?(\d{1,2}(?:[.,]\d+)?) 0\b(?=\s*[NSEW,])/g, '$1°$2′')
+    // Elsevier glyph loss: "56◦23.0340 ◦ N 76◦34.8180 ◦ W" = 56°23.034′N 76°34.818′W
+    .replace(/\b(\d{1,3})\s*[°º˚◦֯]\s*(\d{1,2}\.\d+?)0\s*[°º˚◦֯]\s*([NSEW])\b/g, '$1°$2′$3')
     .replace(/(\d)\s*[°º˚◦֯]/g, '$1°')
     .replace(/(\d)\s*(?:′′|''|’’|″|”|")/g, '$1″')
     .replace(/(\d)\s*[′'’´]/g, '$1′')
@@ -135,10 +139,10 @@ function nearest(list, anchor, maxDist = 600) {
 }
 
 // ---------- site name ----------
-const FEATURE = "(?:Lake|Lakes|Lac|Loch|Lough|Pond|Bog|Fen|Mire|Marsh|Swamp|Cave|Moss|Tarn|Lagoon|Laguna|Lagoa|Lago|Mere|Meadow|Hollow|Slough|Pocosin|Pool|See|Sjön|Järvi|Blue Hole|Sinkhole|Cenote|Wetland|Peatland|Spring|Springs|Creek|Cocha|Ciénaga|Vlei)";
+const FEATURE = "(?:Strait|Sound|Fjord|Fiord|Inlet|Bay|Lake|Lakes|Lac|Loch|Lough|Pond|Bog|Fen|Mire|Marsh|Swamp|Cave|Moss|Tarn|Lagoon|Laguna|Lagoa|Lago|Mere|Meadow|Hollow|Slough|Pocosin|Pool|See|Sjön|Järvi|Blue Hole|Sinkhole|Cenote|Wetland|Peatland|Spring|Springs|Creek|Cocha|Ciénaga|Vlei)";
 const NAME_WORD = "[A-ZÀ-Þ][a-zà-ÿ'’]+";
 const NAME = `${NAME_WORD}(?:[ -](?:(?:de|del|da|do|dos|das|la|le|of) )?${NAME_WORD}){0,2}`;
-const STOP_LEAD = /^(The|This|These|That|In|At|From|Our|A|An|Figure|Fig|Table|Late|Early|Middle|Holocene|Pleistocene|North|South|East|West|Northern|Southern|Eastern|Western|Upper|Lower|Great|Small|Large|Modern|Surface|Using|Environmental|Change|Changes|Record|Records|Data|Study|Site|Sites|Core|Cores|Each|Both|Near|Nearby|Between|Two|Three|Several|Other|Many|Most|All|Some|And|Of|For|With)\b\s*/;
+const STOP_LEAD = /^(The|This|These|That|In|At|From|Our|A|An|Figure|Fig|Table|Late|Early|Middle|Holocene|Pleistocene|North|South|East|West|Northern|Southern|Eastern|Western|Upper|Lower|Great|Small|Large|Modern|Surface|Using|Environmental|Change|Changes|Pollen|Spore|Fossil|Marine|Coastal|Boreal|Arctic|Subarctic|Tundra|Forest|Sediment|Sediments|Proxy|Climate|Record|Records|Data|Study|Site|Sites|Core|Cores|Each|Both|Near|Nearby|Between|Two|Three|Several|Other|Many|Most|All|Some|And|Of|For|With)\b\s*/;
 
 // Candidate site names ranked by how often they occur, with a strong bonus for
 // appearing in the title (papers usually name their main site there).
@@ -170,7 +174,9 @@ export function findSiteNames(rawText, title = '') {
     // "Billy Slope Meadow (BSM)": authors define an abbreviation for their study site
     const abbrev = new RegExp(`${esc}\\s*\\(([A-Z]{2,6})\\)`).test(text);
     const inTitle = !!t && t.includes(e.value.toLowerCase()) && regional < e.count / 2;
-    const score = e.count - regional * 1.5 + (inTitle ? 25 : 0) + (abbrev ? 20 : 0);
+    // "core AMD0509-20 was collected in the Nastapoka Strait": where the core came from is the site
+    const coredIn = new RegExp(`(?:collected|cored|retrieved|recovered|obtained|taken|raised|sampled)\\s+(?:from|in|at)\\s+(?:the\\s+)?${esc}`, 'i').test(text);
+    const score = e.count - regional * 1.5 + (inTitle ? 25 : 0) + (abbrev ? 20 : 0) + (coredIn ? 100 : 0);
     return { ...e, inTitle, abbrev, score };
   });
   // drop a name that is just a shorter piece of a better-scoring one ("Blue Hole" inside "Church's Blue Hole")
@@ -281,6 +287,8 @@ export function findDepEnv(text, siteName, { fauna = false, archaeo = false } = 
   if (/\b(spring|springs|cienega|ciénaga|seep)\b/i.test(site) || (site && /spring[- ]fed/i.test(near))) return { value: 'Spring', index: idx };
   if (/\b(bog|fen|mire|moss|peatland|wetland|swamp|muskeg|meadow)\b/i.test(site)) return { value: 'Palustrine', index: idx };
   if (/\bsinkhole|cenote\b/i.test(site)) return { value: 'Sinkhole', index: idx };
+  // marine cores from straits, bays and sounds are "Bay" in hand-made files (Nastapoka Strait)
+  if (/\b(strait|bay|sound|inlet|fjord|fiord)\b/i.test(site)) return { value: 'Bay', index: idx };
   if (/\b(rock ?shelter|abrigo|alero)\b/i.test(site)) return { value: archaeo ? 'Archaeological Rock Shelter' : 'Rockshelter', index: idx };
   // Neotoma cave sub-environments: "Stream Deposited Cave Sediment" only when the paper is about
   // an active stream system (Bender's Cave mentions "stream" 27 times); otherwise "Cave"
@@ -304,9 +312,11 @@ export function findCollectionDate(text) {
   const seasons = { spring: 4, summer: 7, autumn: 10, fall: 10, winter: 1 };
   const body = text.split(/\n\s*(?:References|Bibliography|Literature cited)\s*\n/i)[0];
   const verbs = /\b(cored|coring|collected|retrieved|obtained|sampled|samples? were|recovered|extracted|taken|drilled|fieldwork|field work|field season)\b/i;
-  for (const sm of body.matchAll(/[^.]*\b(?:19[5-9]\d|20[0-4]\d)\b[^.]*(?:\.|$)/g)) {
-    const sent = sm[0];
-    if (!verbs.test(sent) || /\bet al\.|\(\d{4}\)|published/i.test(sent)) continue;
+  const sents = [...body.matchAll(/[^.]*\b(?:19[5-9]\d|20[0-4]\d)\b[^.]*(?:\.|$)/g)]
+    .sort((a, b) => Number(/\bcor(?:e|es|ed|ing)\b/i.test(b[0])) - Number(/\bcor(?:e|es|ed|ing)\b/i.test(a[0])) || a.index - b.index);
+  for (const sm of sents) {
+    const sent = sm[0].replace(/\b(19|20)\d\d\s*[–-]\s*(19|20)?\d\d\b/g, ' ');
+    if (!verbs.test(sent) || !/\b(?:19[5-9]\d|20[0-4]\d)\b/.test(sent) || /\bet al\.|\(\d{4}\)|published/i.test(sent)) continue;
     const m = sent.match(/(?:(\d{1,2})\s+)?\b(january|february|march|april|may|june|july|august|september|october|november|december|spring|summer|autumn|fall|winter)?\b(?:\s+of)?,?\s*(?:(\d{1,2}),?\s+)?\b((?:19[5-9]|20[0-4])\d)\b/i);
     if (!m) continue;
     const word = (m[2] || '').toLowerCase();
@@ -327,12 +337,12 @@ export function findCollectionDate(text) {
 const MATERIALS = /\b(bulk sediments?|bulk|gyttja|peat|charcoal|wood(?: cellulose)?|twigs?|needles?|leaves|leaf|seeds?|fruits?|pollen(?: concentrate)?|shells?|pelecypod[a-z ]*|foraminifera|sphagnum[a-z ]*|carex[a-z ]*|macrofossils?|plant(?: remains| material| macrofossils?)?|organics?|humates?|humic acids?|bone|conifer needles?|terrestrial [a-z ]{3,30}|ash|tephra)\b/i;
 
 function labRegex() {
-  const extra = ['UOC', 'LACUFF', 'CAIS', 'ACC', 'NOSAMS', 'ISGS', 'WW', 'NTUAMS', 'SacA', 'VERA', 'FTMC', 'YAUG', 'DeA', 'ICA', 'TKA', 'RICH', 'BGS', 'GIA'];
+  const extra = ['AWI', 'UOC', 'LACUFF', 'CAIS', 'ACC', 'NOSAMS', 'ISGS', 'WW', 'NTUAMS', 'SacA', 'VERA', 'FTMC', 'YAUG', 'DeA', 'ICA', 'TKA', 'RICH', 'BGS', 'GIA'];
   const all = [...new Set([...LAB_PREFIXES, ...extra])].sort((a, b) => b.length - a.length);
   const long = all.filter((p) => p.length > 2).map((p) => p.replace(/-/g, String.raw`\s*[-–]\s*`)).join('|');
   const short = all.filter((p) => p.length <= 2).join('|');
   // long prefixes: optional separator; short ones (AA, OS, TO…) need a hyphen to avoid false hits
-  return new RegExp(String.raw`(?<![A-Za-z0-9])(?:(${long})\s*[-–*]?\s*(\d{3,7}(?:[-.]\d{1,4})?)|(${short})(?:\s*[-–]\s*(\d{3,7})|\s+(\d{4,7})))(?![\d,])`, 'gi');
+  return new RegExp(String.raw`(?<![A-Za-z0-9])(?:(${long})\s*[-–*]?\s*(\d{1,3}(?:,\d{3})+|\d{3,7}(?:[-.]\d{1,4})?)|(${short})(?:\s*[-–]\s*(\d{3,7})|\s+(\d{4,7})))(?![\d,])`, 'gi');
 }
 let LAB_RE;
 
@@ -345,8 +355,8 @@ function numbersIn(s) {
   const toks = [];
   const re = /(\d+(?:\.\d+)?)\s*(?:[-–]|\be\b|to)\s*(\d+(?:\.\d+)?)|(\d+(?:\.\d+)?)/g;
   for (const m of s.matchAll(re)) {
-    if (m[3] != null) toks.push({ n: parseFloat(m[3]), i: m.index });
-    else toks.push({ a: parseFloat(m[1]), b: parseFloat(m[2]), i: m.index });
+    if (m[3] != null) toks.push({ n: parseFloat(m[3]), i: m.index, e: m.index + m[0].length });
+    else toks.push({ a: parseFloat(m[1]), b: parseFloat(m[2]), i: m.index, e: m.index + m[0].length });
   }
   return toks;
 }
@@ -367,6 +377,7 @@ function readRow(after, before) {
     const toks = numbersIn(side.slice(0, age.index)).filter((t) => t.b != null || t.n < 100000);
     const d = side === after ? toks[toks.length - 1] : toks[0];
     if (d) Object.assign(row, depthOf(d));
+    if (d && side === after) row.materialText = side.slice(d.e, age.index);
     row.pmc = /pMC|percent modern/i.test(side.slice(age.index, age.index + age[0].length + 12));
     return row;
   }
@@ -377,7 +388,7 @@ function readRow(after, before) {
     if (a.n == null || e.n == null) continue;
     if (a.n >= 20 && a.n <= 60000 && e.n >= 5 && e.n <= 3000 && e.n <= Math.max(30, a.n / 2) && Number.isInteger(e.n)) {
       row.age = a.n; row.error = e.n;
-      if (toks[i - 1]) Object.assign(row, depthOf(toks[i - 1]));
+      if (toks[i - 1]) { Object.assign(row, depthOf(toks[i - 1])); row.materialText = after.slice(toks[i - 1].e, a.i); }
       break;
     }
   }
@@ -389,8 +400,10 @@ export function findDates(text) {
   const t = String(text).replace(/−/g, '-');
   const hits = [...t.matchAll(LAB_RE)].map((m) => {
     const prefix = (m[1] || m[3]).replace(/\s+/g, '');
-    return { lab: `${prefix}-${m[2] || m[4] || m[5]}`, index: m.index, end: m.index + m[0].length };
-  });
+    // a short code followed by a space must be written in capitals ("AA 14822", not "to 2005")
+    if (m[5] && prefix !== prefix.toUpperCase()) return null;
+    return { lab: `${prefix}-${(m[2] || m[4] || m[5]).replace(/,/g, '')}`, index: m.index, end: m.index + m[0].length };
+  }).filter(Boolean);
   const dates = [];
   const seen = new Set();
   // tables where the age comes first ("1020 ± 40 Beta 101877 925–961 XVI"): most lab numbers are
@@ -411,7 +424,10 @@ export function findDates(text) {
     else row = readRow(after, before);
     if (row.age == null) return;
     seen.add(key);
-    const matM = (after.match(MATERIALS) || before.match(MATERIALS) || [])[1];
+    // the table's own wording between depth and age ("bivalve shell", "shell fragments and benthic
+    // foraminifera"); otherwise the first material word nearby
+    const phrase = (row.materialText || '').replace(/\s+/g, ' ').trim();
+    const matM = /^[A-Za-z][A-Za-z ,()/-]{2,80}$/.test(phrase) ? phrase[0].toUpperCase() + phrase.slice(1) : (after.match(MATERIALS) || before.match(MATERIALS) || [])[1];
     const context = before + ' ' + after;
     dates.push({
       labNumber: h.lab, age: row.age, error: row.error ?? null,
@@ -516,6 +532,11 @@ export function extractFromPublication(pages, fileName, { title = '', site = '' 
   if (dev) add('collectionUnit.CollectionDevice', dev.value, dev.index, 0.6);
   const env = findDepEnv(text, siteName, { fauna, archaeo });
   if (env) add('collectionUnit.DepositionalEnvironment', env.value, env.index, 0.45);
+  // the core's own ID ("core AMD0509-20") is the collection name in hand-made files
+  const coreIds = new Map();
+  for (const m of text.matchAll(/\bcores?\s+([A-Z]{2,}[A-Za-z]*\s?\d[\w./-]*\d|[A-Z]{1,4}\d{2,}[\w./-]*)\b/g)) coreIds.set(m[1], (coreIds.get(m[1]) || 0) + 1);
+  const coreId = [...coreIds.entries()].sort((a, b) => b[1] - a[1])[0];
+  if (coreId) add('collectionUnit.CollectionName', coreId[0], text.indexOf(coreId[0]), Math.min(0.5 + coreId[1] * 0.05, 0.8));
   const cd = findCollectionDate(text);
   if (cd) add('collectionUnit.CollectionDate', cd.value, cd.index, 0.5, cd.raw);
   // "core" also appears in URLs (cambridge.org/core) and prose; require coring language

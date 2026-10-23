@@ -273,24 +273,30 @@ export function buildTilia(record, options = {}) {
   }
 
   // ---- Age model (sample ages + the dates that constrain them) ----
-  if (hasAges) {
+  // Written when there are sample ages, or radiocarbon dates to serve as its controls (hand-made
+  // files keep an "Author provided" chronology of controls even before sample ages are added).
+  const controls = dated.map((g, i) => ({ g, id: i + 1 })).filter(({ g }) => (byName ? unitOf(g) : num(g.depth) != null) && /carbon|14c/i.test(g.method || 'Carbon-14'));
+  if (hasAges || controls.length) {
     const ages = S.map((s) => num(s.age)).filter((a) => a != null);
     x.open('AgeModels', { AnalysisUnitID: byName ? 'Name' : 'Depth' });
     x.open('AgeModel');
     x.leaf('ChronNumber', 1);
-    x.leaf('ChronologyName', chronName);
-    x.leaf('AgeUnits', dataset.AgeUnits || 'Calibrated radiocarbon years BP');
-    x.leaf('Default', 'True');
-    x.leaf('Model', dataset.AgeModel || chronName);
-    // bounds rounded outward to the nearest 10 years, as in hand-made files (2312 → 2320, -58 → -60)
-    x.leaf('AgeBoundOlder', Math.ceil(Math.max(...ages) / 10) * 10);
-    x.leaf('AgeBoundYounger', Math.floor(Math.min(...ages) / 10) * 10);
+    x.leaf('ChronologyName', hasAges ? chronName : (dataset.ChronologyName || 'Author provided'));
+    if (hasAges) {
+      x.leaf('AgeUnits', dataset.AgeUnits || 'Calibrated radiocarbon years BP');
+      x.leaf('Default', 'True');
+      x.leaf('Model', dataset.AgeModel || chronName);
+      x.leaf('AgeBoundOlder', Math.ceil(Math.max(...ages) / 10) * 10);
+      x.leaf('AgeBoundYounger', Math.floor(Math.min(...ages) / 10) * 10);
+    } else {
+      x.leaf('Default', 'False');
+      x.leaf('Model', dataset.AgeModel);
+    }
     const preparers = inv.length ? inv : [];
     if (preparers.length) {
       x.leaf('PreparersText', preparers.map((id) => contacts[id - 1].ShortContactName || contacts[id - 1].FullContactName).join('; '));
       x.open('Preparers'); preparers.forEach((id) => x.empty('Contact', { ID: id })); x.close('Preparers');
     }
-    const controls = dated.map((g, i) => ({ g, id: i + 1 })).filter(({ g }) => (byName ? unitOf(g) : num(g.depth) != null) && /carbon|14c/i.test(g.method || 'Carbon-14'));
     if (controls.length) {
       x.open('ChronControls');
       for (const { g, id } of controls) {
@@ -337,7 +343,11 @@ export function validate(record) {
   if (!record.collectionUnit?.Handle) warn('warn', 'Collection unit handle is empty.');
   if (!record.collectionUnit?.CollectionName) warn('warn', 'Collection unit name is empty (Tilia warns about this).');
   if (!contacts.some((c) => (c.roles || []).includes('Collector'))) warn('note', 'No collectors are set.');
-  if (!data || !data.samples?.length) warn('warn', 'No spreadsheet data — the file will contain metadata only.');
+  // a paper alone often lacks the counts ("data available on request"): say so plainly
+  if (!data || !data.samples?.length) {
+    if (publications.length) warn('error', 'No data table: the paper doesn’t include the counts. Add the data spreadsheet (from the authors or a data repository), or use Claude extraction if the data are printed in the paper.');
+    else warn('warn', 'No spreadsheet data — the file will contain metadata only.');
+  }
   else {
     const vars = data.variables.filter((v) => v.include);
     if (!vars.length) warn('error', 'Every variable is excluded.');

@@ -63,7 +63,7 @@ test('Collection date', () => eq(findCollectionDate('Two cores were collected in
 test('Radiocarbon table rows', () => {
   const d = findDates(`Beta-512344     140-141      wood    1270 ± 30\nUCIAMS-20931 380-381 charcoal 3790 ± 25`);
   eq(d.length, 2); eq(d[0].labNumber, 'Beta-512344'); eq(d[0].age, 1270); eq(d[0].error, 30);
-  eq(d[0].depth, 140.5); eq(d[0].thickness, 1); eq(d[1].material, 'charcoal');
+  eq(d[0].depth, 140.5); eq(d[0].thickness, 1); eq(d[1].material, 'Charcoal');
 });
 test('Full publication pass', () => {
   const found = extractFromPublication([{ page: 2, text: `Linden Pond (44°58'12"N, 93°15'36"W; 287 m a.s.l.) is a kettle pond in Minnesota. Collected with a Livingstone corer. pollen pollen pollen` }], 'paper.pdf');
@@ -205,9 +205,11 @@ test('Spreadsheet cells land in the right rows/cols', () => {
   eq(cell(8, 1), '10'); eq(cell(8, 2), 'A'); eq(cell(9, 3), '200'); eq(cell(8, 4), '5'); eq(cell(9, 5), undefined);
   ok(!buildTilia(rec).includes('>Total<'), 'excluded variable not written');
 });
-test('Ages option drops #Chron1 and the age model', () => {
+test('Ages option drops #Chron1; dates still give a controls-only age model', () => {
   const xml = buildTilia(rec, { includeAges: false });
-  ok(!xml.includes('#Chron1') && !xml.includes('<AgeModels'));
+  ok(!xml.includes('#Chron1'), 'no #Chron1 row');
+  const am = parse(xml).querySelector('AgeModels > AgeModel');
+  eq([am.querySelector('ChronologyName').textContent, am.querySelector('Default').textContent, am.querySelectorAll('ChronControl').length], ['Author provided', 'False', 1]);
   ok(xml.includes('<cell row="3">\n<text>Pin'), 'Pinus moves up to row 3');
 });
 test('dateToSerial', () => { eq(dateToSerial('2015-07'), 42186); eq(dateToSerial('1993'), 33970); eq(dateToSerial(''), null); });

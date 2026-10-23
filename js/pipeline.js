@@ -107,7 +107,10 @@ export async function geocodeSite(state, { fetchImpl = fetch.bind(globalThis) } 
   const a = (await res.json()).address || {};
   state.geocodedFor = key;
   const src = `OpenStreetMap, from ${lat.toFixed(4)}, ${lon.toFixed(4)}`;
-  const put = (path, value) => value && addCandidate(state, path, { value, source: src, confidence: 0.8 });
+  // offshore sites: map boundaries put coastal waters in another unit (Hudson Bay → Nunavut) while
+  // papers and experts use the adjacent shore (Quebec), so the paper's wording wins there
+  const marine = /^(bay|marine|estuarine)$/i.test(state.values['collectionUnit.DepositionalEnvironment'] || '');
+  const put = (path, value) => value && addCandidate(state, path, { value, source: src, confidence: marine && path !== 'site.Country' ? 0.4 : 0.8 });
   put('site.Country', a.country);
   put('site.State', a.state || a.province || a.region);
   put('site.County', (a.county || a.state_district || '').replace(/\s+(County|Borough|Parish|Census Area|Municipality|Regional District|District)$/i, ''));
