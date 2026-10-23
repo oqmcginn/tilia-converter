@@ -9,6 +9,7 @@ import {
 } from './record.js';
 import { DATASET_TYPES, COLLECTION_TYPES, DEPOSITIONAL_ENVIRONMENTS } from './lookups.js';
 import { MODELS, extractWithClaude } from './ai.js';
+import { claudeFaunaToDataset } from './extract/fauna.js';
 import { resolveOrcids, normalizeOrcid, orcidChecksumOK, confidenceLabel } from './orcid.js';
 
 const $ = (sel) => document.querySelector(sel);
@@ -312,7 +313,7 @@ async function runClaude() {
         onProgress: (m) => { status.textContent = `${src.name}: ${m}`; },
       });
       applyClaude(out, src.name);
-      src.detail += ` · ✦ Claude: ${out.fields.length} fields, ${out.dates.length} dates`;
+      src.detail += ` · ✦ Claude: ${out.fields.length} fields, ${out.dates.length} dates${out.fauna?.present ? `, ${out.fauna.records.length} faunal records` : ''}`;
       finishIngest();
     }
     status.textContent = 'Done. Claude’s suggestions are marked ✦ in the review.';
@@ -365,6 +366,14 @@ function applyClaude(out, fileName) {
   // new evidence: re-check anyone not settled by strong evidence or by the user
   state.contacts.forEach((c) => { if (c.orcid && !c.orcid.userPicked && c.orcid.status !== 'confirmed') c.orcid.checked = 0; });
   addDates(state, out.dates.map((d) => ({ ...d, source: `✦ Claude · ${fileName}${d.page ? `, p.${d.page}` : ''}` })));
+  const fauna = claudeFaunaToDataset(out.fauna, `✦ Claude · ${fileName}`);
+  if (fauna) {
+    // replace an earlier Claude table for this file; the user asked for this reading explicitly
+    state.datasets = state.datasets.filter((d) => !(d.layout === 'claude-fauna' && d.source === fauna.source));
+    state.datasets.push(fauna);
+    if (!state.datasetChosen) state.activeDataset = state.datasets.length - 1;
+    state.notes.push(`Claude (${fileName}): faunal data for ${fauna.variables.length} taxon × element rows in ${fauna.samples.length} unit(s), ${out.fauna.countType}. Check it against the paper's tables.`);
+  }
   if (out.notes) state.notes.push(`Claude (${fileName}): ${out.notes}`);
 }
 

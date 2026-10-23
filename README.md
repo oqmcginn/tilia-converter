@@ -15,7 +15,7 @@ Everything runs in the browser. Files are not uploaded anywhere. The exceptions 
 | **Date sheets** | Lab number, depth (incl. ranges like `100-102`), ¹⁴C age, error, material, method. |
 | **Publications** (PDF, txt) | DOI, coordinates (DMS, decimal-minutes, decimal with hemispheres, labelled), altitude, water depth, site name, country/state/county, dataset type, coring device, depositional environment, collection date, radiocarbon dates (lab number + age ± error + depth + material), author emails. Each value records its page. |
 | **CrossRef / RIS / BibTeX** | Title, authors, journal, year, volume, issue, pages, DOI → publication + contacts. |
-| **Claude** (optional) | Reads the full paper including tables and returns every Tilia field it can support, each with a page number and a supporting quote. |
+| **Claude** (optional) | Reads the full paper, including tables, scanned pages and image-only tables. Returns every Tilia field it can support with a page number and supporting quote, every radiometric date (tagged with its analysis unit), and the vertebrate faunal list as taxon × element × unit records, following the lab's conventions (NISP or presence/absence, “Assemblage” for single assemblages, totals for time-bin tables, only the chosen site's column). The faunal table becomes the dataset unless you pick another. |
 
 ## ORCID iDs for contacts
 

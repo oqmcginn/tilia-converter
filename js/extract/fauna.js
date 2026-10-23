@@ -181,3 +181,28 @@ export function occurrencesToDataset(occ, source) {
     variables,
   };
 }
+
+// Claude's structured faunal list → a Tilia data table (same shape as the other parsers).
+export function claudeFaunaToDataset(fauna, source) {
+  if (!fauna?.present || !fauna.records?.length) return null;
+  const units = [...(fauna.units || [])];
+  for (const r of fauna.records) if (!units.includes(r.unit)) units.push(r.unit || 'Assemblage');
+  const presence = fauna.countType === 'presence/absence';
+  const rows = new Map();
+  for (const r of fauna.records) {
+    const unit = r.unit || 'Assemblage';
+    const element = (r.element || 'bone').trim();
+    const key = `${r.taxon}|${element}`;
+    if (!rows.has(key)) {
+      rows.set(key, { name: r.taxon, rawLabel: r.taxon, element, unitHint: fauna.countType, units: fauna.countType, _autoUnits: true, _unitGuess: fauna.countType, values: units.map(() => null), include: true, excludeReason: '', presence });
+    }
+    const v = rows.get(key);
+    const j = units.indexOf(unit);
+    v.values[j] = presence ? 1 : (v.values[j] || 0) + (Number(r.value) || 0);
+  }
+  return {
+    source, sheet: '✦ Claude: faunal data', layout: 'claude-fauna', roles: {},
+    samples: units.map((u) => ({ name: u, depth: null, thickness: null, age: null, analyst: '' })),
+    variables: [...rows.values()].filter((v) => v.values.some((x) => x != null)),
+  };
+}

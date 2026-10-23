@@ -243,6 +243,7 @@ export function pickDataset(state) {
     }
     if (words && words.test(String(d.sheet || d.source).toLowerCase())) s += 3;
     s += 4 * fit(d);
+    if (d.layout === 'claude-fauna') s += 6; // read on the user's request, from the whole paper
     return s + Math.min(1, (d.variables.length * d.samples.length) / 5000);
   };
   state.activeDataset = state.datasets.reduce((best, d, i, all) => (score(d) > score(all[best]) ? i : best), 0);

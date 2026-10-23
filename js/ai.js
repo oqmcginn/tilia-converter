@@ -24,7 +24,7 @@ const nullable = (t) => ({ anyOf: [{ type: t }, { type: 'null' }] });
 const SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['fields', 'authors', 'dates', 'notes'],
+  required: ['fields', 'authors', 'dates', 'fauna', 'notes'],
   properties: {
     fields: {
       type: 'array',
@@ -54,11 +54,32 @@ const SCHEMA = {
       type: 'array',
       items: {
         type: 'object', additionalProperties: false,
-        required: ['labNumber', 'age', 'error', 'depth', 'thickness', 'material', 'method', 'page'],
+        required: ['labNumber', 'age', 'error', 'depth', 'thickness', 'unit', 'material', 'method', 'page'],
         properties: {
           labNumber: { type: 'string' }, age: { type: 'number' }, error: nullable('number'),
-          depth: nullable('number'), thickness: nullable('number'), material: { type: 'string' },
+          depth: nullable('number'), thickness: nullable('number'), unit: nullable('string'), material: { type: 'string' },
           method: { type: 'string' }, page: nullable('integer'),
+        },
+      },
+    },
+    // vertebrate faunal data for the site, one record per taxon × element × analysis unit
+    fauna: {
+      type: 'object', additionalProperties: false,
+      required: ['present', 'countType', 'units', 'records'],
+      properties: {
+        present: { type: 'boolean' },
+        countType: { type: 'string', enum: ['NISP', 'MNI', 'presence/absence'] },
+        units: { type: 'array', items: { type: 'string' } },
+        records: {
+          type: 'array',
+          items: {
+            type: 'object', additionalProperties: false,
+            required: ['taxon', 'element', 'unit', 'value', 'page'],
+            properties: {
+              taxon: { type: 'string' }, element: { type: 'string' }, unit: { type: 'string' },
+              value: { type: 'number' }, page: nullable('integer'),
+            },
+          },
         },
       },
     },
@@ -80,7 +101,15 @@ Read the attached publication and report every Tilia metadata field it states, u
 - For each field give the page number and a short verbatim quote (under 25 words) that supports it.
 - dates: every radiometric date in the paper (usually a table). age is the uncalibrated measured age (e.g. 14C yr BP) and error its 1-sigma uncertainty; method is e.g. "Carbon-14", "Lead-210", "OSL".
 - authors: all authors in order, with emails, ORCID iDs (format 0000-0000-0000-0000) and affiliations only if printed in the paper. Never guess an ORCID.
-- If the paper describes several sites, report the primary one the dataset belongs to and list the others in notes. If the user named a site below, report that site.`;
+- If the paper describes several sites, report the primary one the dataset belongs to and list the others in notes. If the user named a site below, report that site.
+- dates.unit: the analysis unit (stratum, level, zone, area…) the dated sample came from, named exactly as in fauna.units, or null when dates are tied to depths.
+
+fauna: the vertebrate fauna recorded at the site, if the paper reports any (otherwise present=false and empty lists). Follow the conventions of Neotoma data stewards:
+- One record per taxon × skeletal element × analysis unit. value is the count (NISP unless the paper only gives MNI) or 1 for presence; set countType accordingly ("presence/absence" when the paper only lists or ticks taxa).
+- taxon: the identification as printed, without "sp.", "spp." or notes like "(2 taxa)"; keep "cf." qualifiers. Use the Latin name when a table gives common names with Latin in parentheses. Skip totals rows and non-taxon rows.
+- element: "bone" unless the paper lists skeletal elements for individual specimens; then use Neotoma element terms, e.g. "tooth, third molar", "tooth, premolar" (position uncertain), "metatarsal, third", "vertebra, atlas", "phalanx", "mandible", "maxilla".
+- units: the analysis units (strata, levels, zones, excavation areas, loci) named as in the paper, in the paper's order. Use a single unit "Assemblage" when the fauna is reported for the site as a whole. If the columns are time bins (e.g. MIS stages) and a total column exists, report the totals under "Assemblage". If a table compares several sites, report only the site being converted, as "Assemblage". Specimens without provenience go in "Assemblage".
+- Read faunal tables, appendices and specimen lists ("Material", "Referred material") — including tables that are images.`
 
 let clientCache;
 async function getClient(apiKey) {
@@ -91,19 +120,26 @@ async function getClient(apiKey) {
   return clientCache.client;
 }
 
-// input: {bytes} for a PDF, or {text} for plain text.
-export async function extractWithClaude({ apiKey, model, input, fileName, site = '', onProgress }) {
-  const client = await getClient(apiKey);
+// The Messages API request (exported so tests can check the schema without calling the API).
+export function buildClaudeRequest({ model, input, fileName, site = '' }) {
   const doc = input.bytes
     ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: toBase64(input.bytes) }, title: fileName }
     : { type: 'document', source: { type: 'text', media_type: 'text/plain', data: input.text }, title: fileName };
   const params = {
     model,
-    max_tokens: 32000,
+    // faunal tables can run to hundreds of records; streaming keeps a large budget safe from timeouts
+    max_tokens: 64000,
     thinking: { type: 'adaptive' },
-    output_config: { effort: 'medium', format: { type: 'json_schema', schema: SCHEMA } },
+    output_config: { effort: 'high', format: { type: 'json_schema', schema: SCHEMA } },
     messages: [{ role: 'user', content: [doc, { type: 'text', text: site ? `${PROMPT}\n\nThe user is converting the site “${site}”.` : PROMPT }] }],
   };
+  return params;
+}
+
+// input: {bytes} for a PDF, or {text} for plain text.
+export async function extractWithClaude({ apiKey, model, input, fileName, site = '', onProgress }) {
+  const client = await getClient(apiKey);
+  const params = buildClaudeRequest({ model, input, fileName, site });
   onProgress?.('Claude is reading the paper…');
   let stream;
   if (model === 'claude-opus-5') {
