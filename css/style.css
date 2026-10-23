@@ -193,6 +193,7 @@ tr.off td:first-child { opacity: 1; }
 .issues li.error { background: var(--error-soft); color: var(--error); }
 .issues li.warn { background: var(--warn-soft); color: var(--warn); }
 .issues li.ok { background: var(--accent-soft); color: var(--accent); }
+.issues li.note { background: var(--surface-2); color: var(--muted); }
 
 .xml-preview summary { cursor: pointer; font-weight: 600; }
 .xml-preview pre { max-height: 480px; overflow: auto; background: var(--surface-2); border-radius: 8px; padding: 12px; margin: 12px 0 0; font-size: 12px; line-height: 1.45; white-space: pre; }

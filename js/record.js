@@ -4,6 +4,7 @@
 import { splitName, formatCitation } from './extract/bib.js';
 import { guessPollenGroup, DEFAULTS_BY_TYPE } from './lookups.js';
 import { TAXA } from './data/taxa.js';
+import { proxyVariable } from './data/variables.js';
 
 // name/code → [name, code, element, units, group]
 const normTaxon = (s) => String(s || '').toLowerCase().replace(/[‐-–_]+/g, '-').replace(/\s+/g, ' ').trim();
@@ -49,7 +50,7 @@ function taxonCandidates(label) {
   if (core.length === 1) out.push(`${cap(core[0])}-type`, cap(core[0]).replace(/acea$/, 'aceae'));
   return [...new Set(out)];
 }
-export function findTaxon(name, code) {
+export function findTaxon(name, code, { fuzzy = true } = {}) {
   for (const cand of taxonCandidates(name)) {
     const n = normTaxon(cand);
     const hit = TAXON_BY_NAME.get(n) || TAXON_BY_NAME.get(n.replace(/[- ]type$/, '')) || TAXON_BY_NAME.get(n.replace(/\s*\(.*\)$/, ''));
@@ -57,6 +58,7 @@ export function findTaxon(name, code) {
   }
   if (code && TAXON_BY_CODE.get(String(code).toLowerCase())) return TAXON_BY_CODE.get(String(code).toLowerCase());
   // one- or two-letter misspellings of a single genus ("cercocarphus")
+  if (!fuzzy) return null;
   for (const cand of taxonCandidates(name).slice(-4)) {
     const n = normTaxon(cand);
     if (n.length < 6) continue;
@@ -182,6 +184,18 @@ export function applyTypeDefaults(state) {
         auto('element', '_autoElement', hit[2]);
         auto('units', '_autoUnits', v.presence ? 'present/absent' : (v.unitHint ? v._unitGuess || hit[3] : hit[3]));
         auto('group', '_autoGroup', hit[4]);
+      } else if (/fauna/i.test(type || '') && /\s(?:spp?\.|indet\.?)(?=\s|$)|\((?:indeterminate|indet\.?)\)/i.test(v.name) && !v._edited?.name) {
+        // open nomenclature for taxa not in the lookup: "Anas sp." → "Anas", as hand conversions do
+        v.rawLabel ||= v.name;
+        v.name = v.name.replace(/\s*\((?:indeterminate|indet\.?)\)/gi, '').replace(/\s+(?:spp?\.|indet\.?)(?=\s|$)/gi, '').replace(/\s+/g, ' ').trim();
+        auto('element', '_autoElement', def.element ?? '');
+      } else if (!/pollen|fauna/i.test(type || '') && (v._proxy = proxyVariable(v.rawLabel || v.name, ds.sheet, v.subhead))) {
+        const p = v._proxy;
+        if (!v._edited?.name && v.name !== p.name) { v.rawLabel ||= v.name; v.name = p.name; }
+        auto('code', '_autoCode', p.code);
+        auto('element', '_autoElement', p.element);
+        auto('units', '_autoUnits', p.units);
+        auto('group', '_autoGroup', p.group);
       } else {
         auto('element', '_autoElement', def.element ?? '');
         auto('units', '_autoUnits', v.presence ? 'present/absent' : (v._unitGuess || def.units || ''));
@@ -197,11 +211,43 @@ export function applyTypeDefaults(state) {
 export function pickDataset(state) {
   if (state.datasetChosen || state.datasets.length < 2) return;
   const type = String(state.values['dataset.DatasetType'] || '').toLowerCase();
-  const words = { 'loss-on-ignition': /loss|\bloi\b/, 'plant macrofossil': /macro/, 'charcoal': /char/, 'pollen': /pollen|palyn/ }[type] || (type ? new RegExp(type.split(' ')[0]) : null);
-  const byName = words ? state.datasets.findIndex((d) => words.test(String(d.sheet || d.source).toLowerCase())) : -1;
-  state.activeDataset = byName >= 0 ? byName
-    : state.datasets.reduce((best, d, i, all) => (d.variables.length * d.samples.length > all[best].variables.length * all[best].samples.length ? i : best), 0);
+  const site = siteKey(state.values['site.SiteName']);
+  const words = { 'loss-on-ignition': /loss|\bloi\b/, 'plant macrofossil': /macro/, 'charcoal': /char/, 'pollen': /pollen|palyn/, 'geochemistry': /geochem|chem|isotope|element/ }[type] || (type ? new RegExp(type.split(' ')[0]) : null);
+  // how well a table's columns fit the dataset type (charcoal columns for a charcoal dataset, …)
+  const fit = (d) => {
+    const vs = d.variables.filter((v) => v.include !== false);
+    if (!vs.length) return 0;
+    const ok = vs.filter((v) => {
+      const p = proxyVariable(v.rawLabel || v.name, d.sheet, v.subhead);
+      if (type === 'charcoal') return p?.code === 'char';
+      if (type === 'geochemistry') return p && p.code !== 'char' && p.code !== 'samp.quant';
+      if (type === 'pollen' || type === 'vertebrate fauna') return !!findTaxon(v.name, v.code);
+      return false;
+    }).length;
+    return ok / vs.length;
+  };
+  // site evidence only helps when the tables disagree about the site
+  const distinctSites = new Set(state.datasets.map((d) => siteKey(d.site || '')).filter(Boolean));
+  const useSite = distinctSites.size >= 2 || state.datasets.some((d) => siteKey(String(d.sheet || '').split(' › ')[0]) === site);
+  const score = (d) => {
+    let s = 0;
+    if (useSite) {
+    // a sheet named after the site ("Dewey") is the strongest sign; then a group label or site column
+    const sheetBase = siteKey(String(d.sheet || '').split(' › ')[0]);
+    if (site && sheetBase === site) s += 5;
+    const ds = siteKey(d.site || '') || (sheetBase === site ? site : '');
+    // exact site match beats a prefix match ("GaI" must not take the "GaII" table)
+    if (site && ds && ds === site) s += 12;
+    else if (site && ds && ds.length >= 2 && site.length >= 2 && (site.startsWith(ds) || ds.startsWith(site))) s += 8;
+    else if (site && d.site) s -= 5; // a table explicitly for another site
+    }
+    if (words && words.test(String(d.sheet || d.source).toLowerCase())) s += 3;
+    s += 4 * fit(d);
+    return s + Math.min(1, (d.variables.length * d.samples.length) / 5000);
+  };
+  state.activeDataset = state.datasets.reduce((best, d, i, all) => (score(d) > score(all[best]) ? i : best), 0);
 }
+const siteKey = (s) => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\b(lake|pond|lago|lac|laguna|lagoa)\b/g, '').replace(/[^a-z0-9]/g, '');
 
 // Sample ages (and min/max range) from an age-model sheet, matched by depth with
 // linear interpolation between modelled depths. Ages already in the data sheet win.

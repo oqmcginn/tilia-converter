@@ -66,29 +66,44 @@ Citations use Neotoma's style ("Galka, M., K.-H. Knorr, and A. Feurdean. 2025. T
 
 Always review the file in Tilia (lookups, taxon names, chronology) before you submit to Neotoma.
 
-## Accuracy on real papers
+## Accuracy on real examples
 
-`tests/eval.html` runs the publication pipeline on example PDFs and scores each field against hand-made Tilia files. Put study folders (a PDF plus a `.tlx`) next to the app and generate `tests/_eval/manifest.json`, which is git-ignored and stays on your machine. Results on 21 lab examples (three are scanned PDFs with no text layer), with the site chosen by the user:
+Two local test suites compare the converter with hand-made Tilia files (example folders stay on your machine; manifests in `tests/_eval/` are git-ignored):
 
-| Field | Correct |
-|---|---|
-| Radiocarbon dates found (by lab number) | 134 / 152, of which 119 have exactly the right age and error |
-| Latitude / longitude | 12 / 21, 11 / 21 |
-| Altitude | 11 / 21 |
-| Country / state / county | 17 / 21, 15 / 20, 7 / 10 |
-| Dataset type | 19 / 21 |
-| Title / year / journal | 16 / 21, 13 / 17, 10 / 15 |
-| Collection device | 15 / 20 |
-| Depositional environment | 12 / 21 |
-| Collection date (year) | 9 / 19 |
+- `tests/eval.html` scores metadata extracted from papers (`?site=1` = site chosen by the user, `?set=new` = the October examples).
+- `tests/data-eval.html` builds the data table from each case's spreadsheets and papers and compares it cell by cell.
 
-With the paper *and* its data workbook (Billy Slope Meadow), every metadata field, all dates, the age model and all 1,240 spreadsheet cells match the expert's file.
+**Metadata** (site chosen by the user):
 
-**Vertebrate papers without a spreadsheet.** The "Material and provenience" (or "Referred material") sections are read specimen by specimen: taxon, element and zone, including ranges ("TxVP 44302-114 through TxVP 44302-120"), sub-units ("Zone 15 (surface: …; blue-green clay: …)") and specimens without provenience (put in an "Assemblage" column). Anatomical shorthand becomes Neotoma element terms ("P4" → "tooth, fourth premolar", "metatarsal III" → "metatarsal, third"), and each zone × taxon × element is counted as NISP. On Bender's Cave this reproduces the expert's 13 zone columns and 36 of their 41 data cells; the rest are expert judgement calls, such as genus-level identifications.
+| Field | Original 22 papers | October examples (45 pairs) |
+|---|---|---|
+| Radiocarbon dates found | 134 / 152 | 109 / 144 |
+| …with exact age and error | 119 / 134 | 94 / 109 |
+| Dataset type | 20 / 22 | 36 / 45 |
+| Collection type | 19 / 22 | 33 / 45 |
+| Depositional environment | 13 / 22 | 18 / 45 |
+| DOI / journal / year | 7 / 7, 11 / 16, 14 / 18 | 11 / 12, 39 / 43, 39 / 45 |
+| Authors found | 57% | 90% |
+| Coordinates | 12 / 22 | 13 / 45 (many faunal sites are deliberately not located in the paper) |
 
-**Multi-proxy workbooks.** Sheets are recognised as data, dates (including "2780 ± 35" cells), or age-model output (depth + best + min/max, e.g. clam or Bacon). The sheet matching the dataset type is converted. Sample ages and their modelled ranges come from the age-model sheet. Spreadsheet taxon labels are mapped to Neotoma names ("Salicaceae populus type" → Populus-type, "Cheno.Am" → Amaranthaceae).
+**Data tables:** 16 cases reproduce the expert's file exactly, or within the expert's rounding: Billy Slope Meadow, Dewey Lake, all 9 Galka charcoal sites, Kimble Pond, Sharkey Lake, O'Brien isotopes, Round Lake CaCO₃ and (from the paper alone) most of Bender's Cave, Ziegler Reservoir and Signature Cave.
 
-Scanned PDFs, per-site values in complex tables, and anything not stated in the paper need Claude extraction or manual entry.
+What still needs a person or Claude extraction:
+
+- scanned PDFs;
+- faunal lists in prose or image-only tables;
+- choosing between several proxy tables in one workbook (Round Lake);
+- expert judgement calls (re-identified taxa, genus-level entries).
+
+**What the converter learned from the examples:**
+
+- a dictionary of non-taxon variables: charcoal size classes and units; δ¹⁸O, δ¹³C and δ²H; elements with units; C:N; CaCO₃; sample quantity. "CHAR" (accumulation rate) is treated as derived, while "Total Charcoal" is kept as the count.
+- splitting sheets that stack several sites, put sites side by side, or hold several sub-tables.
+- converting CE ages to years BP, and preferring composite depth.
+- rebuilding faunal tables from PDF word positions: site columns, Total columns used for time bins, and Latin names inside common names.
+- linking dates to named analysis units (`AnalysisUnitID="Name"`).
+- lab vocabulary: Terrestrial and Archaeological environments for faunal sites, Kettle Lake, Excavation and Section.
+- a taxon lookup of 1,060 Neotoma taxa from 121 expert files.
 
 ## Run locally
 
@@ -117,13 +132,16 @@ js/ai.js                optional Claude extraction (structured JSON output)
 js/orcid.js             ORCID matching, scoring and evidence
 js/pipeline.js          publication ingestion, site re-anchoring, reverse geocoding
 js/data/taxa.js         Neotoma taxon lookup built from hand-converted files
+js/data/variables.js    non-taxon variables (charcoal, isotopes, elements) → Neotoma names
+js/extract/tables.js    faunal tables rebuilt from PDF word positions
 js/extract/spreadsheet.js  sheet classification, layout detection, sample/variable parsing
 js/extract/text.js      publication text heuristics
 js/extract/bib.js       CrossRef, RIS, BibTeX, names, citations
 js/lookups.js           vocabularies, pollen groups, device/environment patterns
 samples/                fictional example inputs
 tests/index.html        browser unit tests
-tests/eval.html         field-by-field accuracy against hand-made Tilia files
+tests/eval.html         metadata accuracy against hand-made Tilia files
+tests/data-eval.html    data-table accuracy, cell by cell
 ```
 
 ## Libraries

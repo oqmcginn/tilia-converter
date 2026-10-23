@@ -71,7 +71,9 @@ function addSource(name, kind) {
 
 async function handleFiles(files) {
   for (const file of files) {
-    const kind = fileKind(file.name);
+    let kind = fileKind(file.name);
+    // a .txt can be a tab/comma-separated data table ("Depth  CalBP  d18OVPDB …") rather than a paper
+    if (kind === 'text' && await looksTabular(file)) kind = 'spreadsheet';
     const src = addSource(file.name, kind);
     try {
       if (kind === 'spreadsheet') await ingestSpreadsheet(file, src);
@@ -87,6 +89,16 @@ async function handleFiles(files) {
     }
     finishIngest();
   }
+}
+
+async function looksTabular(file) {
+  const lines = (await file.slice(0, 4000).text()).split(/\r?\n/).filter((l) => l.trim()).slice(0, 8);
+  if (lines.length < 3) return false;
+  const sep = lines[0].includes('\t') ? '\t' : lines[0].includes(',') ? ',' : null;
+  if (!sep) return false;
+  const widths = lines.map((l) => l.split(sep).length);
+  const cells = lines.slice(1).flatMap((l) => l.split(sep));
+  return widths.every((w) => w === widths[0] && w >= 2) && cells.filter((c) => /^\s*-?\d+(\.\d+)?\s*$/.test(c)).length >= 0.6 * cells.length;
 }
 
 async function ingestSpreadsheet(file, src) {
@@ -767,7 +779,7 @@ function refreshExport() {
     const rec = toRecord(state);
     const issues = validate(rec);
     $('#issues').replaceChildren(...(issues.length ? issues : [{ level: 'ok', msg: 'Ready to export.' }])
-      .map((i) => h('li', { class: i.level }, h('span', {}, i.level === 'error' ? '●' : i.level === 'warn' ? '▲' : '✓'), i.msg)));
+      .map((i) => h('li', { class: i.level }, h('span', {}, i.level === 'error' ? '●' : i.level === 'warn' ? '▲' : i.level === 'note' ? 'ℹ' : '✓'), i.msg)));
     const xml = currentXML();
     const pre = $('#xml');
     pre.textContent = xml.length > 200000 ? xml.slice(0, 200000) + '\n… (truncated in preview; the download is complete)' : xml;

@@ -239,19 +239,23 @@ export function buildTilia(record, options = {}) {
 
   // ---- Geochronology ----
   const dated = geochron.filter((g) => num(g.age) != null);
+  // faunal datasets have named units, not depths: dates and age-model controls are then linked
+  // by unit name (AnalysisUnitID="Name"), as in hand-made vertebrate files
+  const byName = S.length > 0 && S.every((s) => s.depth == null);
+  const unitOf = (g) => g.unit || (S.length === 1 ? S[0].name : '');
   const pubText = publications[0] ? shortRef(publications[0]) : '';
   if (dated.length) {
     x.open('GeochronDataset');
     if (inv.length) { x.open('Investigators'); inv.forEach((id) => x.empty('Contact', { ID: id })); x.close('Investigators'); }
-    x.open('Geochronology', { AnalysisUnitID: 'Depth' });
+    x.open('Geochronology', { AnalysisUnitID: byName ? 'Name' : 'Depth' });
     dated.forEach((g, i) => {
       const method = g.method || 'Carbon-14';
       const err = num(g.error);
       x.open('GeochronSample', { ID: i + 1 });
       x.leaf('Method', method);
       x.leaf('AgeUnits', /lead|210pb|cesium|137cs|plutonium/i.test(method) ? 'Calendar years AD/BC' : /osl|luminescence|u-series|uranium/i.test(method) ? 'Calendar years BP' : 'Radiocarbon years BP');
-      x.leaf('Depth', num(g.depth));
-      x.leaf('Thickness', num(g.thickness));
+      if (byName) x.leaf('AnalysisUnit', unitOf(g));
+      else { x.leaf('Depth', num(g.depth)); x.leaf('Thickness', num(g.thickness)); }
       x.leaf('LabNumber', g.labNumber);
       x.leaf('Age', num(g.age));
       x.leaf('ErrorOlder', err);
@@ -271,7 +275,7 @@ export function buildTilia(record, options = {}) {
   // ---- Age model (sample ages + the dates that constrain them) ----
   if (hasAges) {
     const ages = S.map((s) => num(s.age)).filter((a) => a != null);
-    x.open('AgeModels', { AnalysisUnitID: 'Depth' });
+    x.open('AgeModels', { AnalysisUnitID: byName ? 'Name' : 'Depth' });
     x.open('AgeModel');
     x.leaf('ChronNumber', 1);
     x.leaf('ChronologyName', chronName);
@@ -286,15 +290,15 @@ export function buildTilia(record, options = {}) {
       x.leaf('PreparersText', preparers.map((id) => contacts[id - 1].ShortContactName || contacts[id - 1].FullContactName).join('; '));
       x.open('Preparers'); preparers.forEach((id) => x.empty('Contact', { ID: id })); x.close('Preparers');
     }
-    const controls = dated.map((g, i) => ({ g, id: i + 1 })).filter(({ g }) => num(g.depth) != null && /carbon|14c/i.test(g.method || 'Carbon-14'));
+    const controls = dated.map((g, i) => ({ g, id: i + 1 })).filter(({ g }) => (byName ? unitOf(g) : num(g.depth) != null) && /carbon|14c/i.test(g.method || 'Carbon-14'));
     if (controls.length) {
       x.open('ChronControls');
       for (const { g, id } of controls) {
         const age = num(g.age), err = num(g.error) ?? 0;
         x.open('ChronControl');
         x.leaf('ControlType', 'Radiocarbon');
-        x.leaf('Depth', num(g.depth));
-        x.leaf('Thickness', num(g.thickness));
+        if (byName) x.leaf('AnalysisUnit', unitOf(g));
+        else { x.leaf('Depth', num(g.depth)); x.leaf('Thickness', num(g.thickness)); }
         x.leaf('AgeUnits', 'Radiocarbon');
         x.leaf('Age', age);
         x.leaf('AgeLimitOlder', age + err);
@@ -329,7 +333,10 @@ export function validate(record) {
   if (Number.isNaN(lat) || Number.isNaN(lon)) warn('error', 'Site coordinates are missing.');
   else if (Math.abs(lat) > 90 || Math.abs(lon) > 180) warn('error', 'Site coordinates are out of range.');
   if (!dataset.DatasetType) warn('error', 'Dataset type is not set.');
+  // the same checks Tilia runs on import
   if (!record.collectionUnit?.Handle) warn('warn', 'Collection unit handle is empty.');
+  if (!record.collectionUnit?.CollectionName) warn('warn', 'Collection unit name is empty (Tilia warns about this).');
+  if (!contacts.some((c) => (c.roles || []).includes('Collector'))) warn('note', 'No collectors are set.');
   if (!data || !data.samples?.length) warn('warn', 'No spreadsheet data — the file will contain metadata only.');
   else {
     const vars = data.variables.filter((v) => v.include);

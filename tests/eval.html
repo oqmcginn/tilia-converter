@@ -80,7 +80,7 @@ const RULES = {
   'collectionUnit.CollectionDevice': (a, b) => { const k = norm(a).split(' ').filter((w) => w.length > 3 && !/corer|sampler|piston|modified/.test(w)); return k.length > 0 && k.some((w) => norm(b).includes(w)); },
   'collectionUnit.CollectionDate': (a, b) => String(a).slice(0, 4) === String(b).slice(0, 4),
   'pub.Title': (a, b) => { const x = norm(a), y = norm(b); return x.length > 10 && (x === y || y.startsWith(x.slice(0, 40)) || x.startsWith(y.slice(0, 40))); },
-  'pub.DOI': (a, b) => norm(a) === norm(b),
+  'pub.DOI': (a, b) => norm(String(a).replace(/^(https?:\/\/)?(dx\.)?doi\.org\//i, '')) === norm(String(b).replace(/^(https?:\/\/)?(dx\.)?doi\.org\//i, '')),
   'pub.Year': (a, b) => String(a) === String(b),
 };
 const same = (k, a, b) => (RULES[k] || ((x, y) => norm(x) === norm(y)))(a, b);
@@ -123,7 +123,7 @@ async function evaluate(pair) {
 
 const status = document.getElementById('status');
 let manifest;
-try { manifest = await (await fetch('_eval/manifest.json')).json(); } catch { status.textContent = 'No manifest found.'; throw new Error('no manifest'); }
+try { manifest = await (await fetch(params.get('set') ? `_eval/manifest-${params.get('set')}.json` : '_eval/manifest.json')).json(); } catch { status.textContent = 'No manifest found.'; throw new Error('no manifest'); }
 const rows = [];
 for (const [i, pair] of manifest.entries()) {
   status.textContent = `Evaluating ${i + 1}/${manifest.length}: ${pair.name}…`;

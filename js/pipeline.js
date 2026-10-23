@@ -7,6 +7,7 @@ import { crossrefLookup, crossrefSearchTitle } from './extract/bib.js';
 import { addCandidate, addPublication, addDates } from './record.js';
 import { findOrcidsInText, findAffiliations } from './orcid.js';
 import { parseMaterialSections, occurrencesToDataset } from './extract/fauna.js';
+import { findFaunalTables, tableToDataset, titleTaxa } from './extract/tables.js';
 
 export async function ingestPublication(state, pages, fileName, { title = '', crossref = true, site = '' } = {}) {
   const found = extractFromPublication(pages, fileName, { title, site });
@@ -58,6 +59,28 @@ export async function ingestPublication(state, pages, fileName, { title = '', cr
     if (flagged.length) (state.notes ||= []).push(`${fileName}: ${flagged.map((o) => o.catalog).join(', ')} — ${flagged[0].note}; the last zone given was used.`);
     const noProv = occ.filter((o) => o.unit === 'Assemblage').length;
     if (noProv) (state.notes ||= []).push(`${fileName}: ${noProv} specimen(s) without a zone were put in an "Assemblage" column.`);
+  } else {
+    // otherwise faunal lists in tables: the largest one (tables continued on later pages are joined)
+    const tabs = findFaunalTables(pages);
+    if (tabs.length) {
+      const best = tabs.reduce((a, b) => (b.score > a.score ? b : a));
+      for (const t of tabs) if (t !== best && t.page === best.page + 1 && t.columns.join('|') === best.columns.join('|')) best.rows.push(...t.rows);
+      const ds = tableToDataset(best, fileName, { site });
+      if (ds.variables.length >= 2) {
+        state.datasets.push(ds);
+        notes.push(`table on p.${best.page}: ${ds.variables.length} taxa × ${ds.samples.length} unit(s)`);
+      }
+    } else {
+      const taxa = titleTaxa(pub.ArticleTitle || title);
+      if (taxa.length) {
+        state.datasets.push({
+          source: fileName, sheet: 'Taxa named in the title', layout: 'title-taxa', roles: {},
+          samples: [{ name: 'Assemblage', depth: null, thickness: null, age: null, analyst: '' }],
+          variables: taxa.map((t) => ({ name: t, rawLabel: t, element: 'bone', units: 'presence/absence', _autoUnits: true, unitHint: 'presence/absence', values: [1], include: true, excludeReason: '', presence: true })),
+        });
+        (state.notes ||= []).push(`${fileName}: no faunal table found — ${taxa.join(', ')} (named in the title) recorded as present. Check counts and elements.`);
+      }
+    }
   }
 
   const os = (state.orcidSources ||= { affiliations: [], printed: [] });

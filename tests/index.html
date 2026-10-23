@@ -22,6 +22,8 @@ import { parseRIS, parseBibTeX, splitName, formatCitation } from '../js/extract/
 import { buildTilia, validate, makeCodes, dateToSerial } from '../js/tilia.js';
 import { findTaxon, emptyState, pickDataset, applyAgeModel } from '../js/record.js';
 import { parseMaterialSections, occurrencesToDataset } from '../js/extract/fauna.js';
+import { proxyVariable } from '../js/data/variables.js';
+import { findFaunalTables, tableToDataset } from '../js/extract/tables.js';
 import { guessPollenGroup } from '../js/lookups.js';
 import { orcidChecksumOK, normalizeOrcid, findOrcidsInText, nameAgreement, affiliationOverlap, scoreCandidate, decide, resolveOrcids, findAffiliations } from '../js/orcid.js';
 
@@ -67,7 +69,7 @@ test('Full publication pass', () => {
   const get = (p) => found.find((f) => f.path === p)?.value;
   eq(get('site.SiteName'), 'Linden Pond'); eq(get('site.Altitude'), 287);
   eq(get('collectionUnit.CollectionDevice'), 'Livingstone corer'); eq(get('dataset.DatasetType'), 'pollen');
-  eq(get('collectionUnit.DepositionalEnvironment'), 'Glacial Origin Lake'); // lab convention for kettle lakes
+  eq(get('collectionUnit.DepositionalEnvironment'), 'Kettle Lake'); // lab convention when the paper says kettle
   ok(found.find((f) => f.path === 'site.LatNorth').source.includes('p.2'), 'page provenance');
 });
 
@@ -280,6 +282,67 @@ Blade-like.`;
   eq(ds.variables.find((v) => v.element === 'tooth, premolar').values, [null, 1, 1, null, null]);
 });
 test('Open nomenclature maps to lookup names', () => { eq(findTaxon('Equus sp.')?.[0], 'Equus'); eq(findTaxon('Testudinidae (indeterminate)')?.[0], 'Testudinidae'); eq(findTaxon('Hesperotestudo sp. (giant form)')?.[0], 'Hesperotestudo'); });
+
+// ---------- lessons from the Oct 2 examples ----------
+test('Proxy variable dictionary (charcoal, isotopes, elements, sample quantity)', () => {
+  const v = (h, sh) => { const p = proxyVariable(h, sh); return p && [p.code, p.element, p.units, p.group]; };
+  eq(v('Macrocharcoal counts (particles larger than 150 microns) '), ['char', '>150 µm', 'particles', 'CHAR']);
+  eq(v('>125u', 'Charcoal >125u'), ['char', '>125 µm', 'number', 'CHAR']);
+  eq(v('Total Charcoal'), ['char', 'fragment', 'nisp', 'CHAR']);
+  eq(proxyVariable('Dewey CHAR'), null, 'CHAR = charcoal accumulation rate (derived)');
+  eq(v('d18OVPDB'), ['d18O', 'bulk sediment', 'per mille VPDB', 'ITOP']);
+  eq(v('δ2H ‰'), ['δ2H', 'bulk sediment', 'per mille', 'ELEM']);
+  eq(v('C%'), ['C', 'bulk sediment', 'percent', 'ELEM']);
+  eq(v('Ca (mg/g)'), ['Ca', 'bulk sediment', 'mg/g', 'ELEM']);
+  eq(v('Molar C:N'), ['C:N', 'bulk sediment', 'ratio', 'ELRO']);
+  eq(v('Sediment volume (cm3)'), ['samp.quant', 'volume', 'cm^3', 'LABO']);
+  eq(proxyVariable('Total Macrocharcoal accumulation rates (cm-2/yr-1)'), null);
+});
+test('Sheets holding several sites or side-by-side tables are split', () => {
+  const stacked = analyzeWorkbook([{ name: 'Sheet1', rows: [['Site name', 'DEPTH (cm)', 'Macrocharcoal counts'], ['GaI', 0.5, 3], ['GaI', 1.5, 4], ['GaII', 0.5, 7]] }], 'g.xlsx');
+  eq(stacked.datasets.map((d) => [d.site, d.samples.length]), [['GaI', 2], ['GaII', 1]]);
+  const prefixed = analyzeWorkbook([{ name: 'Totals', rows: [['Dewey Age', 'Dewey Depth', 'Dewey CHAR', 'Two Mile Age', 'Two Mile Depth', 'Two Mile CHAR'], [-50, 0, 137, -29, 11, 396], [-49, 1, 125, -22, 12, 295]] }], 'd.xlsx');
+  eq(prefixed.datasets.map((d) => d.site), ['Dewey', 'Two Mile']);
+  eq(prefixed.datasets[1].samples.map((s) => s.depth), [11, 12]);
+  const blocks = analyzeWorkbook([{ name: 'Sheet1', rows: [['Sharkey Lake', null, null, null, null, 'Kimble Pond', null, null], ['LOI Depth', '% Organic', '% CaCO3', null, 'OM Depth', 'C', 'N', 'Molar C:N'], [1452, 36.7, 22, null, 1560, 9.02, 1.18, 8.9], [1456, 30.1, 20, null, 1592, 10.7, 1.35, 9.2]] }], 'k.xlsx');
+  eq(blocks.datasets.map((d) => [d.site, d.samples[0].depth, d.variables.map((v) => v.name).join(',')]), [['Sharkey Lake', 1452, '% Organic,% CaCO3'], ['Kimble Pond', 1560, 'C,N,Molar C:N']]);
+});
+test('Calendar-year (CE) ages become years BP; composite depth wins', () => {
+  const r = analyzeWorkbook([{ name: 'S', rows: [['Drive', 'Drive Top Depth', 'Total Depth', 'Age (cal yr CE/BCE)', 'Pinus'], [1, 0, 37.25, 2014, 4], [1, 0.5, 37.75, 1990, 6], [1, 1, 38.25, 1960, 2]] }], 's.xlsx');
+  eq(r.datasets[0].samples.map((s) => [s.depth, s.age]), [[37.25, -64], [37.75, -40], [38.25, -10]]);
+  eq(r.datasets[0].variables.map((v) => v.name), ['Pinus']);
+});
+test('Radiocarbon ages with thousands commas, short lab codes, age-first tables', () => {
+  eq(findDates('CAMS 79489 K1 S11-b surface Black bear 20.2 11,250 ± 70 13161').map((d) => [d.labNumber, d.age, d.error]), [['CAMS-79489', 11250, 70]]);
+  eq(findDates('AA 14822 5993–6266 VII 6160 ± 85 next').map((d) => d.labNumber), ['AA-14822']);
+  const t = findDates('1020 ± 40 Beta 101877 925–961 XVI 1200 ± 50 Beta 66940 1058–1216 XIV 2850 ± 50 Beta 103962 2873–3056 XIII');
+  eq(t.map((d) => [d.labNumber, d.age]), [['Beta-101877', 1020], ['Beta-66940', 1200], ['Beta-103962', 2850]]);
+});
+test('Faunal tables from PDF word positions', () => {
+  const it = (s, x, y) => ({ s, x, y, w: s.length * 4, h: 7 });
+  const page = { page: 3, items: [
+    it('Taxon', 40, 520), it('6', 112, 535), it('5e', 124, 535), it('Total', 264, 535),
+    it('Sorex sp. (2 taxa)', 40, 500), it('1', 131, 500), it('6', 275, 500),
+    it('Megalonyx jeffersonii', 40, 490), it('1', 114, 490), it('6', 131, 490), it('65', 272, 490),
+    it('Castor canadensis', 40, 480), it('1', 275, 480),
+  ] };
+  const tabs = findFaunalTables([page]);
+  eq(tabs.length, 1);
+  eq(tabs[0].columns, ['6', '5e', 'Total']);
+  const ds = tableToDataset(tabs[0], 'z.pdf');
+  // time-bin columns + a Total column → one "Assemblage" of totals (expert convention)
+  eq(ds.samples.map((s) => s.name), ['Assemblage']);
+  eq(ds.variables.map((v) => [v.name, v.values[0]]), [['Sorex sp.', 6], ['Megalonyx jeffersonii', 65], ['Castor canadensis', 1]]);
+  const sites = tableToDataset({ page: 13, columns: ['Cement Creek Cave', 'Signature Cave'], rows: [{ taxon: 'Anas sp.', values: [1, null] }, { taxon: 'Lepus', values: [null, 1] }] }, 's.pdf', { site: 'Signature Cave' });
+  eq(sites.samples.map((s) => s.name), ['Assemblage']);
+  eq(sites.variables.map((v) => v.name), ['Lepus']);
+});
+test('Named-unit datasets link dates by analysis unit', () => {
+  const doc = parse(buildTilia({ ...rec, data: { samples: [{ name: 'Assemblage', depth: null }], variables: [{ name: 'Lepus', element: 'bone', units: 'NISP', group: 'LAGO', values: [3], include: true }] }, geochron: [{ labNumber: 'UCIAMS 85358', age: 805, error: 20, material: 'bone' }] }));
+  eq(doc.querySelector('Geochronology').getAttribute('AnalysisUnitID'), 'Name');
+  eq(doc.querySelector('GeochronSample > AnalysisUnit').textContent, 'Assemblage');
+  ok(!doc.querySelector('GeochronSample > Depth'));
+});
 
 // ---------- ORCID ----------
 test('Hyphenated initials', () => eq(splitName('Knorr, Karl-Heinz').LeadingInitials, 'K.-H.'));

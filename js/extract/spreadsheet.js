@@ -15,7 +15,7 @@ const RE = {
   sample: /^(sample|sample[\s_]*(id|name|no\.?|number|code|#)|lab[\s_]*(id|code|no)|id|name|level|stratum|layer|unit|analysis[\s_]*unit|horizon|spit)$/i,
   analyst: /analyst|counted by|identified by/i,
   // columns that are derived, not raw observations
-  derived: /\b(total|sum|zone|concentration|influx|accumulation|par\b|pollen sum|ratio|index|dca|pca|axis)\b|^n$/i,
+  derived: /\b(total|sum|zone|concentration|influx|accumulation|par\b|pollen sum|ratio|index|dca|pca|axis)\b/i,
   varHeader: /^(taxon|taxa|name|species|variable|code|element|units?|context|taphonomy|group|ecological group|type)$/i,
 };
 
@@ -60,6 +60,10 @@ const DATE_COLS = {
 };
 
 // ---------- cell helpers ----------
+// "Total Charcoal" is the raw count Tilia wants; "CHAR" (charcoal accumulation rate) and
+// concentrations are derived. Other totals/sums are derived as before.
+const isDerived = (label) => (RE.derived.test(label) && !/^total\s+(charcoal|char|macrocharcoal|particles?)\b/i.test(label)) || /\bCHAR\b/.test(label);
+
 const isBlank = (v) => v == null || (typeof v === 'string' && /^\s*$/.test(v));
 
 export function toNumber(v) {
@@ -212,16 +216,35 @@ function parseSamplesAsRows(rows, h, sheetName, notes) {
   const header = rows[h].map(labelOf);
   const body = rows.slice(h + 1).filter((r) => r.some((c) => !isBlank(c)));
   const roles = {};
+  // a composite/total depth beats per-drive depths ("Drive Top Depth" … "Total Depth")
+  const composite = header.findIndex((l) => /\b(total|composite|cumulative|splice[d]?|corrected)\s+depth\b|^mcd\b/i.test(l));
+  if (composite >= 0) roles.depth = composite;
+  const siteCol = header.findIndex((l) => /^(site|site\s*name|lake|lake\s*name|location|locality)$/i.test(l));
   header.forEach((l, i) => {
-    if (!l) return;
+    if (!l || i === composite) return;
+    if (composite >= 0 && /depth/i.test(l)) return;
     if (roles.top == null && RE.top.test(l)) roles.top = i;
     else if (roles.bottom == null && RE.bottom.test(l)) roles.bottom = i;
     else if (roles.thick == null && RE.thick.test(l)) roles.thick = i;
     else if (roles.depth == null && RE.depth.test(l)) roles.depth = i;
-    else if (roles.age == null && RE.age.test(l) && !/error|±|sd|sigma|min|max|range/i.test(l)) roles.age = i;
+    else if (RE.age.test(l) && !/error|±|sd|sigma|min|max|range|stop|start|end/i.test(l)) (roles._ages ||= []).push(i);
     else if (roles.sample == null && RE.sample.test(l)) roles.sample = i;
     else if (roles.analyst == null && RE.analyst.test(l)) roles.analyst = i;
   });
+  // "OM Depth", "Abs Depth (CM)", "LOI Depth": any depth column when no standard one was found
+  if (roles.depth == null && roles.top == null) {
+    const d = header.findIndex((l) => /\bdepth\b/i.test(l) && !/water|range|stop|end|bottom/i.test(l));
+    if (d >= 0) roles.depth = d;
+  }
+  // several age columns ("Age (Pb210)" in CE, "Age (smoother)" in BP): prefer one in years BP
+  if (roles._ages?.length) {
+    const ceLike = (i) => { const v = body.map((r) => toNumber(r[i])).filter((x) => x != null); return v.length > 2 && v.every((x) => x > 1000 && x < 2100); };
+    roles.age = roles._ages.find((i) => /\bBP\b|cal/i.test(header[i]) && !ceLike(i)) ?? roles._ages.find((i) => !ceLike(i)) ?? roles._ages[0];
+    roles._otherAges = roles._ages.filter((i) => i !== roles.age);
+  }
+  const otherAges = roles._otherAges || [];
+  delete roles._ages;
+  delete roles._otherAges;
   const depthScale = (i) => {
     if (i == null) return 1;
     const u = splitLabel(header[i]).unit.toLowerCase() || (header[i].match(/\b(mm|m|cm)\b/i) || [])[1]?.toLowerCase();
@@ -231,10 +254,24 @@ function parseSamplesAsRows(rows, h, sheetName, notes) {
   };
   const ageScale = roles.age != null && /\bka\b|kyr|kcal/i.test(header[roles.age]) ? 1000 : 1;
   if (ageScale === 1000) notes.push(`${sheetName}: ages in “${header[roles.age]}” look like ka — multiplied by 1000.`);
+  // calendar years (CE/AD) → years BP (1950 − year), as hand-made files store them
+  let ageCE = false;
+  if (roles.age != null && ageScale === 1) {
+    const lab = header[roles.age];
+    const vals = body.map((r) => toNumber(r[roles.age])).filter((v) => v != null);
+    const looksCE = vals.length > 2 && vals.every((v) => v > 1000 && v < 2100) && vals[0] > vals[vals.length - 1];
+    if (/\b(CE|AD|A\.D\.|BCE|calendar years? (?:AD|CE))\b/.test(lab) || (!/BP|before present/i.test(lab) && looksCE)) {
+      ageCE = true;
+      notes.push(`${sheetName}: ages in “${lab}” are calendar years (CE) — converted to years BP (1950 − year).`);
+    }
+  }
 
-  const metaCols = new Set(Object.values(roles));
+  const metaCols = new Set([...Object.values(roles), ...otherAges]);
+  // bookkeeping columns are not measurements: core/drive labels, other depth scales, the site column
+  header.forEach((l, i) => { if (i === siteCol || /^(core|drive|section|lake|site|site\s*name|hole|segment)$/i.test(l) || (composite >= 0 && i !== composite && /depth/i.test(l))) metaCols.add(i); });
   const samples = body.map((row, r) => {
     const s = { name: '', depth: null, thickness: null, age: null, analyst: '' };
+    if (siteCol >= 0) s.site = labelOf(row[siteCol]);
     const dS = depthScale(roles.depth ?? roles.top);
     if (roles.top != null && roles.bottom != null) {
       const a = toNumber(row[roles.top]), b = toNumber(row[roles.bottom]);
@@ -243,15 +280,29 @@ function parseSamplesAsRows(rows, h, sheetName, notes) {
     if (s.depth == null && roles.depth != null) s.depth = toNumber(row[roles.depth]) != null ? toNumber(row[roles.depth]) * dS : null;
     if (s.depth == null && roles.top != null) s.depth = toNumber(row[roles.top]) != null ? toNumber(row[roles.top]) * dS : null;
     if (roles.thick != null && toNumber(row[roles.thick]) != null) s.thickness = toNumber(row[roles.thick]) * depthScale(roles.thick);
-    if (roles.age != null && toNumber(row[roles.age]) != null) s.age = toNumber(row[roles.age]) * ageScale;
+    if (roles.age != null && toNumber(row[roles.age]) != null) s.age = ageCE ? Math.round((1950 - toNumber(row[roles.age])) * 10) / 10 : toNumber(row[roles.age]) * ageScale;
     if (roles.sample != null) s.name = labelOf(row[roles.sample]);
     if (roles.analyst != null) s.analyst = labelOf(row[roles.analyst]);
-    if (s.depth == null && !s.name) s.name = `${sheetName}-${r + 1}`;
+    if (s.depth == null && !s.name) s.name = String(r + 1);
     if (s.depth != null) s.depth = Math.round(s.depth * 1e4) / 1e4;
     if (s.thickness != null) s.thickness = Math.round(s.thickness * 1e4) / 1e4;
     return s;
   });
 
+  // sub-headings in the row above ("Big 250 … Small 125") apply from their column rightwards
+  const above = h > 0 ? rows[h - 1].map(labelOf) : [];
+  // a group runs from its sub-heading to its "Total …" column; the label is the group's cells joined ("Big 250")
+  const subheadAt = (i) => {
+    for (let k = i; k >= 0; k--) {
+      if (k < i && /^total\b/i.test(header[k] || '')) return '';
+      if (above[k]) {
+        let a = k; while (a > 0 && above[a - 1]) a--;
+        let b = k; while (b + 1 < above.length && above[b + 1]) b++;
+        return above.slice(a, b + 1).join(' ');
+      }
+    }
+    return '';
+  };
   const variables = [];
   header.forEach((label, i) => {
     if (metaCols.has(i) || !label) return;
@@ -264,10 +315,10 @@ function parseSamplesAsRows(rows, h, sheetName, notes) {
     const values = cells.map((c) => c.value);
     const { name, unit } = splitLabel(label);
     variables.push({
-      name, rawLabel: label, unitHint: unit, values,
+      name, rawLabel: label, unitHint: unit, values, subhead: above.length ? subheadAt(i) : '',
       presence: cells.some((c) => c.presence),
-      include: !RE.derived.test(label),
-      excludeReason: RE.derived.test(label) ? 'looks like a derived value (total/sum/concentration)' : '',
+      include: !isDerived(label),
+      excludeReason: isDerived(label) ? 'looks like a derived value (total, sum, concentration, accumulation rate)' : '',
     });
   });
   if (roles.depth == null && roles.top == null && roles.sample == null) {
@@ -327,11 +378,11 @@ function parseVariablesAsRows(rows, h, sheetName, notes) {
       taphonomy: taphCol != null ? labelOf(row[taphCol]) : '',
       group: groupCol != null ? labelOf(row[groupCol]) : undefined,
       presence: cells.some((c) => c.presence),
-      include: !RE.derived.test(label),
-      excludeReason: RE.derived.test(label) ? 'looks like a derived value (total/sum/concentration)' : '',
+      include: !isDerived(label),
+      excludeReason: isDerived(label) ? 'looks like a derived value (total, sum, concentration, accumulation rate)' : '',
     });
   }
-  samples.forEach((s, j) => { if (s.depth == null && !s.name) s.name = `${sheetName}-${j + 1}`; });
+  samples.forEach((s, j) => { if (s.depth == null && !s.name) s.name = String(j + 1); });
   return { samples, variables, layout: 'variables-as-rows', roles: {} };
 }
 
@@ -365,6 +416,49 @@ function parseAgeModelSheet(rows, h, sheetName) {
   return { name: sheetName, model, points };
 }
 
+// One sheet often holds several tables side by side: blocks separated by empty columns
+// (Kimble/Sharkey: "Abs Depth … | LOI Depth … | OM Depth …"), optionally under group labels
+// in the row above the header ("Sharkey Lake" … "Kimble Pond"), or sites given as header
+// prefixes ("Dewey Depth, Dewey CHAR, Two Mile Depth, Two Mile CHAR"). Returns column groups.
+function splitBlocks(rows, h) {
+  const header = rows[h].map(labelOf);
+  const width = header.length;
+  const emptyCol = (c) => !header[c] && rows.slice(h + 1).every((r) => isBlank(r[c]));
+  let blocks = [];
+  let cur = [];
+  for (let c = 0; c < width; c++) {
+    if (emptyCol(c)) { if (cur.length) blocks.push(cur); cur = []; } else cur.push(c);
+  }
+  if (cur.length) blocks.push(cur);
+  blocks = blocks.filter((b) => b.length >= 2);
+  // labels from the row above the header: a label applies from its column until the next label
+  const above = h > 0 ? rows[h - 1].map(labelOf) : [];
+  const labelAt = (c) => { for (let k = c; k >= 0; k--) if (above[k]) return above[k]; return ''; };
+  // a label inside the block's columns wins; otherwise the nearest one to its left
+  // labels name tables only when they sit over separate blocks (Sharkey | Kimble); a label row over
+  // one table is sub-headings ("Big 250 … Small 125")
+  let out = blocks.map((cols) => ({ cols, label: blocks.length >= 2 && above.some(Boolean) ? (cols.map((c) => above[c]).find(Boolean) || labelAt(cols[0])) : '' }));
+  // site prefixes within one block
+  out = out.flatMap((b) => {
+    const pref = new Map();
+    for (const c of b.cols) {
+      const m = header[c].match(/^(.+?)\s+(depth|age|core depth)\b/i);
+      if (m && /depth/i.test(m[2])) pref.set(m[1], []);
+    }
+    // a real site prefix labels several columns and isn't a depth word ("Top depth", "Bottom depth")
+    for (const p of [...pref.keys()]) {
+      const n = b.cols.filter((c) => header[c].startsWith(p + ' ')).length;
+      if (n < 2 || /^(top|bottom|base|upper|lower|mid|midpoint|middle|total|composite|sample|drive|core|start|end|abs|absolute|true|corrected|from|to)$/i.test(p)) pref.delete(p);
+    }
+    if (pref.size < 2) return [b];
+    for (const c of b.cols) { const p = [...pref.keys()].find((k) => header[c].startsWith(k + ' ')); if (p) pref.get(p).push(c); }
+    return [...pref.entries()].map(([p, cols]) => ({ cols, label: p, stripPrefix: p }));
+  });
+  return out;
+}
+
+const sub = (rows, cols, strip) => rows.map((r, i) => cols.map((c) => (strip && typeof r[c] === 'string' && r[c].startsWith(strip + ' ') ? r[c].slice(strip.length + 1) : r[c])));
+
 // Public entry: sheets = [{name, rows}] → analysis result
 export function analyzeWorkbook(sheets, fileName) {
   const result = { datasets: [], metadata: [], geochron: [], ageModels: [], notes: [], sheets: [] };
@@ -396,16 +490,38 @@ export function analyzeWorkbook(sheets, fileName) {
         continue;
       }
     }
-    const layout = chooseLayout(rows, h);
-    const parsed = layout === 'samples-as-rows'
-      ? parseSamplesAsRows(rows, h, label, result.notes)
-      : parseVariablesAsRows(rows, h, label, result.notes);
-    if (!parsed.variables.length) {
+    const blocks = splitBlocks(rows, h);
+    let found = 0;
+    for (const b of blocks.length ? blocks : [{ cols: rows[h].map((_, i) => i), label: '' }]) {
+      const bRows = sub(rows, b.cols, b.stripPrefix);
+      const layout = chooseLayout(bRows, h);
+      const parsed = layout === 'samples-as-rows'
+        ? parseSamplesAsRows(bRows, h, label, result.notes)
+        : parseVariablesAsRows(bRows, h, label, result.notes);
+      if (!parsed.variables.length) continue;
+      const blockName = [sheet.name, b.label].filter(Boolean).join(' › ');
+      // rows from several sites stacked in one table ("Site name" column) → one table per site
+      const sites = [...new Set(parsed.samples.map((x) => x.site).filter(Boolean))];
+      if (sites.length >= 2) {
+        for (const site of sites) {
+          const idx = parsed.samples.map((x, i) => (x.site === site ? i : -1)).filter((i) => i >= 0);
+          result.datasets.push({
+            ...parsed, source: label, sheet: `${blockName} › ${site}`, site,
+            samples: idx.map((i) => parsed.samples[i]),
+            variables: parsed.variables.map((v) => ({ ...v, values: idx.map((i) => v.values[i]) })),
+          });
+        }
+        found += sites.length;
+      } else {
+        result.datasets.push({ ...parsed, source: label, sheet: blockName, site: b.label || sites[0] || '' });
+        found++;
+      }
+    }
+    if (!found) {
       result.sheets.push({ name: sheet.name, kind: 'skipped', detail: 'no numeric data found' });
       continue;
     }
-    result.datasets.push({ ...parsed, source: label, sheet: sheet.name });
-    result.sheets.push({ name: sheet.name, kind: 'data', detail: `${parsed.samples.length} samples × ${parsed.variables.length} variables (${layout})` });
+    result.sheets.push({ name: sheet.name, kind: 'data', detail: found > 1 ? `${found} tables (sites or side-by-side blocks)` : `${result.datasets[result.datasets.length - 1].samples.length} samples × ${result.datasets[result.datasets.length - 1].variables.length} variables` });
   }
   return result;
 }

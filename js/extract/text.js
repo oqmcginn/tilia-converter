@@ -222,8 +222,13 @@ export function findGeography(text) {
 export function guessDatasetType(text) {
   // pollen is weighted up: fire-history papers mention charcoal constantly, but the
   // spreadsheet being converted is usually the pollen data
-  return DATASET_KEYWORDS.map(([type, re]) => ({ value: type, count: (text.match(re) || []).length * (type === 'pollen' ? 3 : 1) }))
+  // weights tuned on 69 hand-converted examples (pollen ×2 is best overall)
+  const scores = DATASET_KEYWORDS.map(([type, re]) => ({ value: type, count: (text.match(re) || []).length * (type === 'pollen' ? 2 : 1) }))
     .filter((s) => s.count > 0).sort((a, b) => b.count - a.count);
+  // isotope studies of fossil bones are faunal datasets in the lab's files
+  const fauna = scores.find((s) => s.value === 'vertebrate fauna');
+  if (scores[0]?.value === 'geochemistry' && fauna?.count >= 40) scores.unshift(...scores.splice(scores.indexOf(fauna), 1));
+  return scores;
 }
 
 // Keep the paper's own wording ("Modified Livingstone piston corer"), as hand conversions do.
@@ -258,7 +263,7 @@ export function findDevice(raw) {
 
 // Environment follows the site's own feature word first (as in hand-made files:
 // most lakes "Natural Lake", peatlands "Palustrine"), refined by origin words near the site.
-export function findDepEnv(text, siteName) {
+export function findDepEnv(text, siteName, { fauna = false, archaeo = false } = {}) {
   const site = siteName || '';
   let near = '';
   if (site) {
@@ -266,7 +271,8 @@ export function findDepEnv(text, siteName) {
   }
   near = near || text.slice(0, 15000);
   const origin = [
-    ['Cirque Lake', /\bcirque\b/i], ['Landslide Origin Lake', /landslide|slump/i], ['Glacial Origin Lake', /\bglacial(?:ly)? (?:formed|origin|lake|carved|scoured)|kettle|moraine[- ]dammed/i],
+    // an explicit kettle is "Kettle Lake" (Round Lake, Kimble Pond); other glacial lakes "Glacial Origin Lake"
+    ['Kettle Lake', /\bkettle\b/i], ['Cirque Lake', /\bcirque\b/i], ['Landslide Origin Lake', /landslide|slump/i], ['Glacial Origin Lake', /\bglacial(?:ly)? (?:formed|origin|lake|carved|scoured)|moraine[- ]dammed/i],
   ];
   const isLake = /\b(lake|lakes|lac|lago|lagoa|laguna|loch|lough|pond|tarn|mere|cocha|see)\b/i.test(site);
   const idx = site ? text.indexOf(site) : 0;
@@ -274,8 +280,13 @@ export function findDepEnv(text, siteName) {
   // spring-fed sites are "Spring" in hand-made files (Billy Slope Meadow: "a spring-fed wet meadow")
   if (/\b(spring|springs|cienega|ciénaga|seep)\b/i.test(site) || (site && /spring[- ]fed/i.test(near))) return { value: 'Spring', index: idx };
   if (/\b(bog|fen|mire|moss|peatland|wetland|swamp|muskeg|meadow)\b/i.test(site)) return { value: 'Palustrine', index: idx };
-  // Neotoma cave sub-environments (hand-made files use "Stream Deposited Cave Sediment")
-  if (/\b(cave|cavern|sinkhole)\b/i.test(site)) return { value: /\b(stream|fluvial|underground river|conduit)\b/i.test(near) ? 'Stream Deposited Cave Sediment' : 'Cave', index: idx };
+  if (/\bsinkhole|cenote\b/i.test(site)) return { value: 'Sinkhole', index: idx };
+  if (/\b(rock ?shelter|abrigo|alero)\b/i.test(site)) return { value: archaeo ? 'Archaeological Rock Shelter' : 'Rockshelter', index: idx };
+  // Neotoma cave sub-environments: "Stream Deposited Cave Sediment" only when the paper is about
+  // an active stream system (Bender's Cave mentions "stream" 27 times); otherwise "Cave"
+  if (/\b(cave|cavern|cueva|gruta)\b/i.test(site)) return { value: (text.match(/\b(stream|underground river|conduit)\b/gi) || []).length >= 10 ? 'Stream Deposited Cave Sediment' : 'Cave', index: idx };
+  // fossil and archaeological sites that aren't lakes: "Terrestrial" / "Archaeological" in hand-made files
+  if (fauna && !isLake) return { value: archaeo ? 'Archaeological' : 'Terrestrial', index: idx };
   if (isLake || /\blake\b/i.test(near)) {
     for (const [env, re] of origin) if (re.test(near)) return { value: env, index: idx };
     return { value: 'Natural Lake', index: idx };
@@ -321,11 +332,12 @@ function labRegex() {
   const long = all.filter((p) => p.length > 2).map((p) => p.replace(/-/g, String.raw`\s*[-–]\s*`)).join('|');
   const short = all.filter((p) => p.length <= 2).join('|');
   // long prefixes: optional separator; short ones (AA, OS, TO…) need a hyphen to avoid false hits
-  return new RegExp(String.raw`(?<![A-Za-z0-9])(?:(${long})\s*[-–*]?\s*(\d{3,7}(?:[-.]\d{1,4})?)|(${short})\s*[-–]\s*(\d{3,7}))(?!\d)`, 'gi');
+  return new RegExp(String.raw`(?<![A-Za-z0-9])(?:(${long})\s*[-–*]?\s*(\d{3,7}(?:[-.]\d{1,4})?)|(${short})(?:\s*[-–]\s*(\d{3,7})|\s+(\d{4,7})))(?![\d,])`, 'gi');
 }
 let LAB_RE;
 
-const NUM = String.raw`\d{1,3}(?: \d{3})+(?:\.\d+)?|\d+(?:\.\d+)?`;
+// thousands may be separated by a space or a comma ("10,905 ± 35")
+const NUM = String.raw`\d{1,3}(?:[ ,]\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?`;
 const PM = String.raw`(?:±|\u0005|\+\/[-−]|\+[-−]|\+\s*\/\s*[-−])`;
 
 function numbersIn(s) {
@@ -350,7 +362,7 @@ function readRow(after, before) {
     if (all.length) { age = all[all.length - 1]; side = before; }
   }
   if (age) {
-    row.age = parseFloat(age[1].replace(/ /g, ''));
+    row.age = parseFloat(age[1].replace(/[ ,]/g, ''));
     row.error = parseFloat(age[2]);
     const toks = numbersIn(side.slice(0, age.index)).filter((t) => t.b != null || t.n < 100000);
     const d = side === after ? toks[toks.length - 1] : toks[0];
@@ -377,10 +389,15 @@ export function findDates(text) {
   const t = String(text).replace(/−/g, '-');
   const hits = [...t.matchAll(LAB_RE)].map((m) => {
     const prefix = (m[1] || m[3]).replace(/\s+/g, '');
-    return { lab: `${prefix}-${m[2] || m[4]}`, index: m.index, end: m.index + m[0].length };
+    return { lab: `${prefix}-${m[2] || m[4] || m[5]}`, index: m.index, end: m.index + m[0].length };
   });
   const dates = [];
   const seen = new Set();
+  // tables where the age comes first ("1020 ± 40 Beta 101877 925–961 XVI"): most lab numbers are
+  // directly preceded by an age ± error, so each takes the age right before it
+  const ageRight = new RegExp(`(${NUM})\\s*${PM}\\s*(\\d+(?:\\.\\d+)?)\\s*$`);
+  const agePrior = hits.map((h) => t.slice(Math.max(0, h.index - 40), h.index).match(ageRight));
+  const ageFirst = hits.length >= 3 && agePrior.filter(Boolean).length >= 0.6 * hits.length;
   hits.forEach((h, k) => {
     const key = h.lab.toLowerCase().replace(/[^a-z0-9]/g, '');
     if (seen.has(key)) return;
@@ -389,7 +406,9 @@ export function findDates(text) {
     const prevEnd = hits[k - 1]?.end ?? 0;
     const lineStart = t.lastIndexOf('\n', h.index - 1) + 1;
     const before = t.slice(Math.max(prevEnd, lineStart, h.index - 120), h.index);
-    const row = readRow(after, before);
+    let row;
+    if (ageFirst && agePrior[k]) row = { age: parseFloat(agePrior[k][1].replace(/[ ,]/g, '')), error: parseFloat(agePrior[k][2]) };
+    else row = readRow(after, before);
     if (row.age == null) return;
     seen.add(key);
     const matM = (after.match(MATERIALS) || before.match(MATERIALS) || [])[1];
@@ -490,10 +509,12 @@ export function extractFromPublication(pages, fileName, { title = '', site = '' 
 
   const types = guessDatasetType(text);
   if (types[0]) add('dataset.DatasetType', types[0].value, null, 0.5, `keyword “${types[0].value}” appears ${types[0].count}×`);
+  const fauna = types[0]?.value === 'vertebrate fauna';
+  const archaeo = (text.match(/\b(archaeolog\w*|artifacts?|artefacts?|middens?|occupation|hearths?|lithics?|paleoindian|hunter-gatherers?|zooarchaeolog\w*|excavation units?|house floors?)\b/gi) || []).length >= 8;
 
   const dev = findDevice(text);
   if (dev) add('collectionUnit.CollectionDevice', dev.value, dev.index, 0.6);
-  const env = findDepEnv(text, siteName);
+  const env = findDepEnv(text, siteName, { fauna, archaeo });
   if (env) add('collectionUnit.DepositionalEnvironment', env.value, env.index, 0.45);
   const cd = findCollectionDate(text);
   if (cd) add('collectionUnit.CollectionDate', cd.value, cd.index, 0.5, cd.raw);
@@ -504,6 +525,8 @@ export function extractFromPublication(pages, fileName, { title = '', site = '' 
   const monolithCount = (text.match(/\bmonoliths?\b|\bpeat blocks?\b|\bexposed sections?\b/gi) || []).length;
   const coringCount = (text.match(/\b(sediment cores?|cored|coring|corer)\b/gi) || []).length;
   if (section && monolithCount >= Math.max(1, coringCount)) add('collectionUnit.CollectionType', 'Section', section.index, 0.55, section[0]);
+  // fossil collections are excavated even when the paper mentions cores elsewhere
+  else if (fauna && coringCount < 5) add('collectionUnit.CollectionType', 'Excavation', null, 0.5, 'vertebrate fossils, not a sediment core');
   else if (coring) add('collectionUnit.CollectionType', 'Core', coring.index, 0.5, coring[0]);
   else if (/\b(excavat|specimens? (?:were )?collected|fossils? (?:were )?collected|test pit|trench)\w*/i.test(text) || /\b(cave|rockshelter|rock shelter)\b/i.test(siteName || '')) {
     add('collectionUnit.CollectionType', 'Excavation', null, 0.45, 'fossils collected, no coring described');

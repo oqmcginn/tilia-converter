@@ -31,10 +31,10 @@ export async function readSpreadsheet(file) {
   // SheetJS guesses Latin-1 for raw CSV bytes, which garbles "°", "±" and accents. Decode UTF-8 ourselves
   // (falling back to Windows-1252 for legacy Excel CSV exports that aren't valid UTF-8).
   let wb;
-  if (/\.(csv|tsv|txt)$/i.test(file.name)) {
+  if (/\.(csv|tsv|txt|tab)$/i.test(file.name)) {
     let text;
     try { text = new TextDecoder('utf-8', { fatal: true }).decode(buf); } catch { text = new TextDecoder('windows-1252').decode(buf); }
-    wb = XLSX.read(text.replace(/^﻿/, ''), { type: 'string', cellDates: true, dense: true, FS: /\.tsv$/i.test(file.name) ? '\t' : undefined });
+    wb = XLSX.read(text.replace(/^﻿/, ''), { type: 'string', cellDates: true, dense: true, FS: /\.(tsv|tab)$/i.test(file.name) || (/\.txt$/i.test(file.name) && text.split('\n')[0].includes('\t')) ? '\t' : undefined });
   } else {
     wb = XLSX.read(buf, { cellDates: true, dense: true });
   }
@@ -69,7 +69,9 @@ export async function readPdf(file) {
       }
     }
     // re-join words hyphenated across line breaks
-    pages.push({ page: i, text: text.replace(/(\w)-\n(\w)/g, '$1$2').replace(/[ \t]+/g, ' ') });
+    // positions are kept so tables can be rebuilt column by column (extract/tables.js)
+    const items = tc.items.map((it) => ({ s: it.str, x: it.transform[4], y: it.transform[5], w: it.width, h: Math.abs(it.transform[3]) }));
+    pages.push({ page: i, text: text.replace(/(\w)-\n(\w)/g, '$1$2').replace(/[ \t]+/g, ' '), items });
   }
   let meta = {};
   try { meta = (await doc.getMetadata()).info || {}; } catch { /* metadata is optional */ }
